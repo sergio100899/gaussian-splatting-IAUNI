@@ -1,0 +1,37 @@
+[project]
+name = "gaussian-splatting"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "diff-gaussian-rasterization",
+    "fused-ssim",
+    "joblib>=1.4.2",
+    "numpy==1.26.4",
+    "opencv-python>=4.11.0.86",
+    "plyfile>=1.1",
+    "setuptools>=79.0.0",
+    "simple-knn",
+    "torch>=2.0.1",
+    "torchaudio>=2.0.2",
+    "torchvision>=0.15.2",
+    "tqdm>=4.67.1",
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu117" }]
+torchvision = [{ index = "pytorch-cu117" }]
+torchaudio = [{ index = "pytorch-cu117" }]
+diff-gaussian-rasterization = { path = "submodules/diff-gaussian-rasterization" }
+simple-knn = { path = "submodules/simple-knn" }
+fused-ssim = { path = "submodules/fused-ssim" }
+
+
+
+[[tool.uv.index]]
+name = "pytorch-cu117"
+url = "https://download.pytorch.org/whl/cu117"
+explicit = true
+
+

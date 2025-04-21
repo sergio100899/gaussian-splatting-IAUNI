@@ -43,6 +43,34 @@ def l1_loss(network_output, gt):
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()
 
+def sobel_edges(img):
+    if img.ndim == 3:
+        img = img.unsqueeze(0)  # Asegura batch dimension
+
+    if img.shape[1] != 1:
+        # Forzamos escala de grises (por si es RGB)
+        img = img[:, 0:1] * 0.2989 + img[:, 1:2] * 0.5870 + img[:, 2:3] * 0.1140
+
+    sobel_x = torch.tensor([[[-1, 0, 1],
+                             [-2, 0, 2],
+                             [-1, 0, 1]]], dtype=torch.float32, device=img.device).unsqueeze(0)
+
+    sobel_y = torch.tensor([[[-1, -2, -1],
+                             [ 0,  0,  0],
+                             [ 1,  2,  1]]], dtype=torch.float32, device=img.device).unsqueeze(0)
+
+    grad_x = F.conv2d(img, sobel_x, padding=1)
+    grad_y = F.conv2d(img, sobel_y, padding=1)
+    edges = torch.sqrt(grad_x ** 2 + grad_y ** 2)
+
+    return edges
+
+def edge_weighted_loss(pred, gt, edge_strength=4.0):
+    edges = sobel_edges(gt)
+    weights = 1.0 + edge_strength * edges
+    loss = (weights * (pred - gt) ** 2).mean()
+    return loss
+
 def gaussian(window_size, sigma):
     gauss = torch.Tensor([exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
     return gauss / gauss.sum()
