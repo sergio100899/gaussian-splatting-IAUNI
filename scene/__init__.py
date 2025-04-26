@@ -40,7 +40,8 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
-        if os.path.exists(os.path.join(args.source_path, "sparse")):
+        if os.path.exists(os.path.join(args.source_path, "sparse")):#check for sparse folder in dataset folder
+            print("Found sparse folder, assuming COLMAP data set!")
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
