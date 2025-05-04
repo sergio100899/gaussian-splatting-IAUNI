@@ -76,7 +76,8 @@ def sobel_edges(img):
 def l1_edge_loss(network_output, gt, alpha_edge=0.2):
     edges = sobel_edges(gt)
     edge_weight = 1.0 + alpha_edge * edges
-    return edge_weight * torch.abs((network_output - gt)).mean()
+    loss = edge_weight * torch.abs(network_output - gt)
+    return loss.mean()
 
 
 def gaussian(window_size, sigma):

@@ -172,7 +172,7 @@ def training(
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1_edge = l1_edge_loss(image, gt_image, alpha_edge=0.2)
+        Ll1_edge = l1_edge_loss(image, gt_image, opt.lambda_edge)
         Ll1 = l1_loss(image, gt_image)
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
