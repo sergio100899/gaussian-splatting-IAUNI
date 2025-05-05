@@ -280,7 +280,7 @@ def training(
                         scene.cameras_extent,
                         size_threshold,
                         radii,
-                        gaussian_edge_indices,
+                        gaussian_edge_indices=gaussian_edge_indices,
                     )
 
                 if iteration % opt.opacity_reset_interval == 0 or (
