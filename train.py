@@ -12,7 +12,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, l1_edge_loss
+from utils.loss_utils import l1_loss, ssim, l1_edge_loss, sobel_edges
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -172,6 +172,19 @@ def training(
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
+
+        edges = sobel_edges(gt_image).squeeze()
+        x = viewspace_point_tensor[:, 0].long()
+        y = viewspace_point_tensor[:, 1].long()
+        H, W = edges.shape
+        valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+        x_valid = x[valid]
+        y_valid = y[valid]
+        indices_valid = valid.nonzero(as_tuple=False).squeeze()
+        edge_values = edges[y_valid, x_valid]
+        edge_mask = edge_values > 0.4
+        gaussian_edge_indices = indices_valid[edge_mask]
+
         Ll1_edge = l1_edge_loss(image, gt_image, opt.lambda_edge)
         Ll1 = l1_loss(image, gt_image)
         if FUSED_SSIM_AVAILABLE:
@@ -263,10 +276,11 @@ def training(
                     )
                     gaussians.densify_and_prune(
                         opt.densify_grad_threshold,
-                        0.005,
+                        0.005,  # min_opacity
                         scene.cameras_extent,
                         size_threshold,
                         radii,
+                        gaussian_edge_indices,
                     )
 
                 if iteration % opt.opacity_reset_interval == 0 or (
