@@ -14,6 +14,14 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
 
+from PIL import Image
+from transformers import pipeline
+import torchvision.transforms as transforms
+
+pipe = pipeline(
+    task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf"
+)
+
 try:
     from diff_gaussian_rasterization._C import fusedssim, fusedssim_backward
 except:
@@ -48,7 +56,7 @@ def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()
 
 
-def sobel_edges(img):
+def sobel_edges(img: torch.tensor) -> torch.tensor:
     if img.ndim == 3:
         img = img.unsqueeze(0)  # Asegura batch dimension
 
@@ -69,15 +77,33 @@ def sobel_edges(img):
     edges = torch.sqrt(grad_x**2 + grad_y**2)
 
     edges_norm = edges / (edges.max() + 1e-8)
-
     return edges_norm
 
 
-def l1_edge_loss(network_output, gt, alpha_edge=0.2):
+def depth_inference(img: torch.tensor) -> torch.tensor:
+    img = (img * 255).byte()
+    img = img.permute(1, 2, 0)
+    imagen_pil = Image.fromarray(img.cpu().numpy())
+
+    depth = pipe(imagen_pil)["depth"]
+    depth_tensor = transforms.ToTensor()(depth)
+
+    return depth_tensor
+
+
+def l1_edge_loss(
+    network_output: torch.tensor, gt: torch.tensor, alpha_edge: float = 0.2
+):
     edges = sobel_edges(gt)
     edge_weight = 1.0 + alpha_edge * edges
     loss = edge_weight * torch.abs(network_output - gt)
     return loss.mean()
+
+
+def depth_loss(network_output: torch.tensor, gt: torch.tensor):
+    gt_depth = depth_inference(gt)
+    nt_depth = depth_inference(network_output)
+    return torch.abs((nt_depth - gt_depth)).mean()
 
 
 def gaussian(window_size, sigma):
