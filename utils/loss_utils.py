@@ -100,6 +100,12 @@ def l1_edge_loss(
     return loss.mean()
 
 
+def edge_loss(network_output: torch.tensor, gt: torch.tensor):
+    gt_edge = sobel_edges(gt)
+    nt_edge = sobel_edges(network_output)
+    return torch.abs((nt_edge - gt_edge)).mean()
+
+
 def depth_loss(network_output: torch.tensor, gt: torch.tensor):
     gt_depth = depth_inference(gt)
     nt_depth = depth_inference(network_output)
