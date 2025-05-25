@@ -559,12 +559,12 @@ class GaussianModel:
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
 
         # Seleccion de gaussianas pertenecientes a bordes
-        if gaussian_edge_indices is not None:
-            edge_mask = torch.zeros_like(
-                selected_pts_mask, dtype=torch.bool, device="cuda"
-            )
-            edge_mask[gaussian_edge_indices] = True
-            selected_pts_mask = torch.logical_or(selected_pts_mask, edge_mask)
+        # if gaussian_edge_indices is not None:
+        #     edge_mask = torch.zeros_like(
+        #         selected_pts_mask, dtype=torch.bool, device="cuda"
+        #     )
+        #     edge_mask[gaussian_edge_indices] = True
+        #     selected_pts_mask = torch.logical_or(selected_pts_mask, edge_mask)
 
         selected_pts_mask = torch.logical_and(
             selected_pts_mask,
@@ -614,12 +614,12 @@ class GaussianModel:
             torch.norm(grads, dim=-1) >= grad_threshold, True, False
         )
 
-        if gaussian_edge_indices is not None:
-            edge_mask = torch.zeros_like(
-                selected_pts_mask, dtype=torch.bool, device="cuda"
-            )
-            edge_mask[gaussian_edge_indices] = True
-            selected_pts_mask = torch.logical_or(selected_pts_mask, edge_mask)
+        # if gaussian_edge_indices is not None:
+        #     edge_mask = torch.zeros_like(
+        #         selected_pts_mask, dtype=torch.bool, device="cuda"
+        #     )
+        #     edge_mask[gaussian_edge_indices] = True
+        #     selected_pts_mask = torch.logical_or(selected_pts_mask, edge_mask)
 
         selected_pts_mask = torch.logical_and(
             selected_pts_mask,
@@ -657,6 +657,17 @@ class GaussianModel:
     ):
         grads = self.xyz_gradient_accum / self.denom  # mean gradient per point
         grads[grads.isnan()] = 0.0
+
+        # ------------------------------------------
+        # AUMENTAR GRADIENTES EN ZONAS DE BORDE
+        # ------------------------------------------
+        if gaussian_edge_indices is not None:
+            edge_weights = torch.ones_like(grads[:, 0], device=grads.device)
+            edge_weights[gaussian_edge_indices] += (
+                0.20  # o ajusta a 1.0 / 1.5 según pruebas
+            )
+            grads = grads * edge_weights.unsqueeze(-1)
+        # ------------------------------------------
 
         self.tmp_radii = radii
         self.densify_and_clone(grads, max_grad, extent, gaussian_edge_indices)

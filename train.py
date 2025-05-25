@@ -12,7 +12,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, depth_loss, edge_loss  # noqa
+from utils.loss_utils import l1_loss, ssim, depth_loss, edge_loss, sobel_edges  # noqa
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -177,18 +177,18 @@ def training(
         gt_image = viewpoint_cam.original_image.cuda()
 
         ################################## uncomment later #################################
-        # edges = sobel_edges(gt_image).squeeze()
-        # x = viewspace_point_tensor[:, 0].long()
-        # y = viewspace_point_tensor[:, 1].long()
-        # H, W = edges.shape
-        # valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
-        # x_valid = x[valid]
-        # y_valid = y[valid]
-        # indices_valid = valid.nonzero(as_tuple=False).squeeze()
-        # edge_values = edges[y_valid, x_valid]
-        # edge_mask = edge_values > 0.4
-        # gaussian_edge_indices = indices_valid[edge_mask]
-        gaussian_edge_indices = None
+        edges = sobel_edges(gt_image).squeeze()
+        x = viewspace_point_tensor[:, 0].long()
+        y = viewspace_point_tensor[:, 1].long()
+        H, W = edges.shape
+        valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+        x_valid = x[valid]
+        y_valid = y[valid]
+        indices_valid = valid.nonzero(as_tuple=False).squeeze()
+        edge_values = edges[y_valid, x_valid]
+        edge_mask = edge_values > 0.4
+        gaussian_edge_indices = indices_valid[edge_mask]
+        # gaussian_edge_indices = None
         ################################################
 
         # Ll1_edge = l1_edge_loss(image, gt_image, opt.lambda_edge)
@@ -199,10 +199,16 @@ def training(
         else:
             ssim_value = ssim(image, gt_image)
 
-        if iteration % 10 == 0:
-            L_depth = depth_loss(image, gt_image)
+        if iteration < opt.densify_until_iter:
+            if iteration % 10 == 0:
+                L_depth = depth_loss(image, gt_image)
+            else:
+                L_depth = L_depth
         else:
-            L_depth = L_depth
+            if iteration % 100 == 0:
+                L_depth = depth_loss(image, gt_image)
+            else:
+                L_depth = L_depth
 
         loss = (
             (1.0 - opt.lambda_dssim) * Ll1
