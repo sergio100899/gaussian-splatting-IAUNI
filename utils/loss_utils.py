@@ -19,7 +19,7 @@ from transformers import pipeline
 import torchvision.transforms as transforms
 
 pipe = pipeline(
-    task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf"
+    task="depth-estimation", model="depth-anything/Depth-Anything-V2-Base-hf"
 )
 
 try:

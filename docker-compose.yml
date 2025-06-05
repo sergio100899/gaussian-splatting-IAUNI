@@ -1,0 +1,15 @@
+services:
+  gaussian_splatting_ia:
+    build:  .
+    container_name: test_gs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./depths:/app/depths
+      - ./train.py:/app/train.py
+    # command: ["sh", "-c", "uv pip install --no-build-isolation '.[submodules]' && echo '¡Instalación completada!'"]
