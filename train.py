@@ -18,6 +18,7 @@ from utils.loss_utils import (
     edge_loss,
     sobel_edges,
     depth_inference,
+    normal_inference,
 )  # noqa
 from gaussian_renderer import render, network_gui
 import sys
@@ -86,6 +87,10 @@ def training(
         opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations
     )
 
+    depth_weight = get_expon_lr_func(
+        opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations
+    )
+
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_indices = list(range(len(viewpoint_stack)))
     ema_loss_for_log = 0.0
@@ -97,6 +102,7 @@ def training(
     first_iter += 1
 
     L_depth = 0
+    L_normal = 0
 
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
@@ -152,7 +158,7 @@ def training(
             viewpoint_indices = list(range(len(viewpoint_stack)))
         rand_idx = randint(0, len(viewpoint_indices) - 1)
         viewpoint_cam = viewpoint_stack.pop(rand_idx)
-        print(viewpoint_cam.image_name)
+        # print(viewpoint_cam.image_name) #image file name
         vind = viewpoint_indices.pop(rand_idx)
 
         # Render
@@ -176,7 +182,6 @@ def training(
             render_pkg["visibility_filter"],
             render_pkg["radii"],
         )
-        import cv2
         # depth_np = depth_map.squeeze().cpu().numpy()
 
         # image =rendered_image
@@ -214,9 +219,6 @@ def training(
             depth_lr = 0.3
             if iteration % 10 == 0:
                 # Rendereed Depth Map
-                # depth_np = depth_map.squeeze().detach().cpu().numpy()
-                # depth_np_norm = (depth_np - depth_np.min()) / (depth_np.max() - depth_np.min())
-                # depth_np_tensor = torch.tensor(depth_np_norm, dtype=torch.float32)
                 depth_tensor_gpu = depth_map.squeeze().detach().to("cuda")
                 depth_np_norm = (depth_tensor_gpu - depth_tensor_gpu.min()) / (
                     depth_tensor_gpu.max() - depth_tensor_gpu.min()
@@ -227,48 +229,23 @@ def training(
                 # Depth Loss
                 L_depth = l1_loss(depth_np_tensor, depth_tensor)
 
-                if iteration % 100 == 0:
-                    zy, zx = torch.gradient(depth_tensor_gpu.float(), dim=[0, 1])
-                    normal_map = torch.stack(
-                        [-zx, -zy, torch.ones_like(depth_tensor_gpu)], dim=2
-                    )
-                    norm = torch.linalg.norm(normal_map, dim=2, keepdim=True) + 1e-8
-                    normal_map = normal_map / norm
+                # Rendered Normal Map
+                normal_map = normal_inference(depth_np_tensor)
+                # Ground Truth Normal Map
+                normal_tensor = normal_inference(depth_tensor)
+                # L_normal = normal_loss(image, gt_image)
 
-                    normal_rgb = (
-                        ((normal_map + 1.0) * 0.5 * 255.0).clamp(0, 255).to(torch.uint8)
-                    )
-
-                    # 🖼️ Convertir a CPU antes de usar OpenCV
-                    normal_bgr = cv2.cvtColor(
-                        normal_rgb.cpu().numpy(), cv2.COLOR_RGB2BGR
-                    )
-                    cv2.imwrite(f"./depths/depth_iter{iteration}.png", normal_bgr)
-                #     cv2.imwrite(f"./depths/depth_iter{iteration}.png", (depth_np_norm * 255).astype(np.uint8))
+                # Normal Loss
+                L_normal = l1_loss(normal_map, normal_tensor)
 
             else:
                 L_depth = L_depth
+                L_normal = L_normal
         else:
+            depth_lr = 0.2
             if iteration % 100 == 0:
-                depth_lr = 0.2
                 # Rendereed Depth Map
                 depth_tensor_gpu = depth_map.squeeze().detach().to("cuda")
-
-                # Normal Map
-                zy, zx = torch.gradient(depth_tensor_gpu.float(), dim=[0, 1])
-                normal_map = torch.stack(
-                    [-zx, -zy, torch.ones_like(depth_tensor_gpu)], dim=2
-                )
-                norm = torch.linalg.norm(normal_map, dim=2, keepdim=True) + 1e-8
-                normal_map = normal_map / norm
-
-                normal_rgb = (
-                    ((normal_map + 1.0) * 0.5 * 255.0).clamp(0, 255).to(torch.uint8)
-                )
-
-                # 🖼️ Convertir a CPU antes de usar OpenCV
-                normal_bgr = cv2.cvtColor(normal_rgb.cpu().numpy(), cv2.COLOR_RGB2BGR)
-                cv2.imwrite(f"./depths/depth_iter{iteration}.png", normal_bgr)
 
                 depth_np_norm = (depth_tensor_gpu - depth_tensor_gpu.min()) / (
                     depth_tensor_gpu.max() - depth_tensor_gpu.min()
@@ -281,15 +258,24 @@ def training(
                 L_depth = l1_loss(depth_np_tensor, depth_tensor_gt)
                 # L_depth = depth_loss(image, gt_image)
 
-                # cv2.imwrite(f"./depths/depth_iter{iteration}.png", (depth_np_norm * 255).astype(np.uint8))
+                # Rendered Normal Map
+                normal_map = normal_inference(depth_np_tensor)
+                # Ground Truth Normal Map
+                normal_tensor = normal_inference(depth_tensor_gt)
+                # L_normal = normal_loss(image, gt_image)
+
+                # Normal Loss
+                L_normal = l1_loss(normal_map, normal_tensor)
             else:
                 L_depth = L_depth
+                L_normal = L_normal
 
         loss = (
             (1.0 - opt.lambda_dssim) * Ll1
             + opt.lambda_dssim * (1.0 - ssim_value)
             + depth_lr * L_depth
             + 0.2 * L_edge
+            + 0.2 * L_normal
         )
 
         # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)

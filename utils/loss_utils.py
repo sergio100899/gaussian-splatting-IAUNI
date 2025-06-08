@@ -91,6 +91,21 @@ def depth_inference(img: torch.tensor) -> torch.tensor:
     return depth_tensor
 
 
+def normal_inference(img: torch.tensor) -> torch.tensor:
+    # depth_tensor = depth_inference(img).squeeze(0).to("cuda")
+
+    # Calcular el mapa de normales
+    zy, zx = torch.gradient(img.float(), dim=[0, 1])
+
+    normal_map = torch.stack([-zx, -zy, torch.ones_like(img)], dim=2)
+
+    # Normalización
+    norm = torch.linalg.norm(normal_map, dim=2, keepdim=True) + 1e-8
+    normal_map = normal_map / norm
+
+    return normal_map
+
+
 def l1_edge_loss(
     network_output: torch.tensor, gt: torch.tensor, alpha_edge: float = 0.2
 ):
@@ -113,6 +128,14 @@ def depth_loss(network_output: torch.tensor, gt: torch.tensor):
     gt_depth = depth_inference(gt)
     nt_depth = depth_inference(network_output)
     return torch.abs((nt_depth - gt_depth)).mean()
+
+
+def normal_loss(network_output: torch.tensor, gt: torch.tensor):
+    gt_depth = depth_inference(gt).squeeze(0).to("cuda")
+    nt_depth = depth_inference(gt).squeeze(0).to("cuda")
+    gt_normal = normal_inference(gt_depth)
+    nt_normal = normal_inference(nt_depth)
+    return torch.abs((nt_normal - gt_normal)).mean()
 
 
 def gaussian(window_size, sigma):

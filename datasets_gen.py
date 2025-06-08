@@ -5,6 +5,8 @@ import argparse
 import cv2
 import torch
 import numpy as np
+from utils.image_utils import load_image_as_tensor_pil
+from utils.loss_utils import edge_loss
 
 
 def aplicar_filtro(img):
@@ -88,8 +90,16 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    procesar_imagenes(args.input_folder, args.output_folder, args.filtro)
+    # sobel_tensor = procesar_imagenes(args.input_folder, args.output_folder, args.filtro)
 
-    # sobel_tensor = load_image_as_tensor_pil(
-    #     args.input_folder + "/0001.png", grayscale=True
-    # )
+    sobel_tensor = load_image_as_tensor_pil(
+        args.input_folder + "/00001.jpg", grayscale=True
+    )
+
+    gt_image = load_image_as_tensor_pil(
+        "./tandt/train/images/00002.jpg", grayscale=False
+    )
+
+    loss = edge_loss(gt_image, sobel_tensor, gt_prefiltered=True)
+
+    print("Edge loss: ", loss)
