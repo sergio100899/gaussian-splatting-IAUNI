@@ -12,4 +12,7 @@ services:
     volumes:
       - ./depths:/app/depths
       - ./train.py:/app/train.py
+      - ./utils/loss_utils.py:/app/utils/loss_utils.py
+      - ./utils/image_utils.py:/app/utils/image_utils.py
+      - ./datasets_gen.py:/app/datasets_gen.py
     # command: ["sh", "-c", "uv pip install --no-build-isolation '.[submodules]' && echo '¡Instalación completada!'"]
