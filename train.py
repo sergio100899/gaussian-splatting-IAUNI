@@ -209,7 +209,7 @@ def training(
 
         # Ll1_edge = l1_edge_loss(image, gt_image, opt.lambda_edge)
         Ll1 = l1_loss(image, gt_image)
-        L_edge = edge_loss(image, gt_image)
+        L_edge = edge_loss(image, gt_image, False)
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
