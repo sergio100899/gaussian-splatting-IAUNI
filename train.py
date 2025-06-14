@@ -340,7 +340,7 @@ def training(
                     y_valid = y[valid]
                     indices_valid = valid.nonzero(as_tuple=False).squeeze()
                     edge_values = edges[y_valid, x_valid]
-                    edge_mask = edge_values > 0.4
+                    edge_mask = edge_values > 0.5
                     gaussian_edge_indices = indices_valid[edge_mask]
                     # gaussian_edge_indices = None
                     ################################################
