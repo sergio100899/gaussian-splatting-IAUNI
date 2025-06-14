@@ -19,6 +19,7 @@ from utils.loss_utils import (
     sobel_edges,
     depth_inference,
     normal_inference,
+    edge_aware_normal_loss,
 )  # noqa
 from gaussian_renderer import render, network_gui
 import sys
@@ -26,7 +27,7 @@ from scene import Scene, GaussianModel
 from utils.general_utils import safe_state, get_expon_lr_func
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr
+from utils.image_utils import psnr, depth_to_normal
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
@@ -102,7 +103,7 @@ def training(
     first_iter += 1
 
     L_depth = 0
-    L_normal = 0
+    L_normal = torch.tensor(0.0, device='cuda')
 
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
@@ -192,31 +193,16 @@ def training(
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
 
-        ################################## uncomment later #################################
-        edges = sobel_edges(gt_image).squeeze()
-        x = viewspace_point_tensor[:, 0].long()
-        y = viewspace_point_tensor[:, 1].long()
-        H, W = edges.shape
-        valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
-        x_valid = x[valid]
-        y_valid = y[valid]
-        indices_valid = valid.nonzero(as_tuple=False).squeeze()
-        edge_values = edges[y_valid, x_valid]
-        edge_mask = edge_values > 0.4
-        gaussian_edge_indices = indices_valid[edge_mask]
-        # gaussian_edge_indices = None
-        ################################################
 
         # Ll1_edge = l1_edge_loss(image, gt_image, opt.lambda_edge)
         Ll1 = l1_loss(image, gt_image)
-        L_edge = edge_loss(image, gt_image, False)
+        L_edge = edge_loss(image, gt_image)
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
             ssim_value = ssim(image, gt_image)
 
         if iteration < opt.densify_until_iter:
-            depth_lr = 0.3
             if iteration % 10 == 0:
                 # Rendereed Depth Map
                 depth_tensor_gpu = depth_map.squeeze().detach().to("cuda")
@@ -229,20 +215,14 @@ def training(
                 # Depth Loss
                 L_depth = l1_loss(depth_np_tensor, depth_tensor)
 
-                # Rendered Normal Map
-                normal_map = normal_inference(depth_np_tensor)
-                # Ground Truth Normal Map
-                normal_tensor = normal_inference(depth_tensor)
-                # L_normal = normal_loss(image, gt_image)
-
                 # Normal Loss
-                L_normal = l1_loss(normal_map, normal_tensor)
+                normal_im = depth_to_normal(depth_map, viewpoint_cam)
+                L_normal = edge_aware_normal_loss(gt_image, normal_im.permute(2, 0, 1))
 
             else:
                 L_depth = L_depth
-                L_normal = L_normal
+                L_normal = L_normal.detach()
         else:
-            depth_lr = 0.2
             if iteration % 100 == 0:
                 # Rendereed Depth Map
                 depth_tensor_gpu = depth_map.squeeze().detach().to("cuda")
@@ -256,24 +236,18 @@ def training(
                 depth_tensor_gt = depth_inference(gt_image).squeeze(0).to("cuda")
                 # Depth Loss
                 L_depth = l1_loss(depth_np_tensor, depth_tensor_gt)
-                # L_depth = depth_loss(image, gt_image)
-
-                # Rendered Normal Map
-                normal_map = normal_inference(depth_np_tensor)
-                # Ground Truth Normal Map
-                normal_tensor = normal_inference(depth_tensor_gt)
-                # L_normal = normal_loss(image, gt_image)
 
                 # Normal Loss
-                L_normal = l1_loss(normal_map, normal_tensor)
+                normal_im = depth_to_normal(depth_map, viewpoint_cam)
+                L_normal = edge_aware_normal_loss(gt_image, normal_im.permute(2, 0, 1))
             else:
                 L_depth = L_depth
-                L_normal = L_normal
+                L_normal = L_normal.detach()
 
         loss = (
             (1.0 - opt.lambda_dssim) * Ll1
             + opt.lambda_dssim * (1.0 - ssim_value)
-            + depth_lr * L_depth
+            + 0.2 * L_depth
             + 0.2 * L_edge
             + 0.2 * L_normal
         )
@@ -355,6 +329,23 @@ def training(
                     iteration > opt.densify_from_iter
                     and iteration % opt.densification_interval == 0
                 ):
+
+                    ################################## uncomment later #################################
+                    edges = sobel_edges(gt_image).squeeze()
+                    x = viewspace_point_tensor[:, 0].long()
+                    y = viewspace_point_tensor[:, 1].long()
+                    H, W = edges.shape
+                    valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+                    x_valid = x[valid]
+                    y_valid = y[valid]
+                    indices_valid = valid.nonzero(as_tuple=False).squeeze()
+                    edge_values = edges[y_valid, x_valid]
+                    edge_mask = edge_values > 0.4
+                    gaussian_edge_indices = indices_valid[edge_mask]
+                    # gaussian_edge_indices = None
+                    ################################################
+
+
                     size_threshold = (
                         20 if iteration > opt.opacity_reset_interval else None
                     )

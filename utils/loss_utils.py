@@ -115,11 +115,8 @@ def l1_edge_loss(
     return loss.mean()
 
 
-def edge_loss(network_output: torch.tensor, gt: torch.tensor, gt_prefiltered: bool):
-    if gt_prefiltered:
-        gt_edge = gt
-    else:
-        gt_edge = sobel_edges(gt)
+def edge_loss(network_output: torch.tensor, gt: torch.tensor):
+    gt_edge = sobel_edges(gt)
     nt_edge = sobel_edges(network_output)
     return torch.abs((nt_edge - gt_edge)).mean()
 
