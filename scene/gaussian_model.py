@@ -550,7 +550,15 @@ class GaussianModel:
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def densify_and_split(
-        self, grads, grad_threshold, scene_extent, N=2, gaussian_edge_indices=None
+        self,
+        grads,
+        grad_threshold,
+        scene_extent,
+        N=2,
+        gaussian_edge_indices=None,
+        apply_gravity=True,
+        gravity_strength=0.3,
+        gravity_k=8,
     ):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
@@ -558,27 +566,63 @@ class GaussianModel:
         padded_grad[: grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
 
-        # Seleccion de gaussianas pertenecientes a bordes
-        # if gaussian_edge_indices is not None:
-        #     edge_mask = torch.zeros_like(
-        #         selected_pts_mask, dtype=torch.bool, device="cuda"
-        #     )
-        #     edge_mask[gaussian_edge_indices] = True
-        #     selected_pts_mask = torch.logical_or(selected_pts_mask, edge_mask)
-
         selected_pts_mask = torch.logical_and(
             selected_pts_mask,
             torch.max(self.get_scaling, dim=1).values
             > self.percent_dense * scene_extent,
         )  # points that are bigger than threshold
 
-        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
+        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)  # new gaussians scales
         means = torch.zeros((stds.size(0), 3), device="cuda")
         samples = torch.normal(mean=means, std=stds)
+
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[
             selected_pts_mask
         ].repeat(N, 1)
+
+        # -----------------------------------------
+        # GRAVEDAD CONTEXTUAL SOLO PARA HIJOS DE BORDES
+        # -----------------------------------------
+        if apply_gravity and new_xyz.shape[0] > 0 and gaussian_edge_indices is not None:
+            # 1. Identificar padres seleccionados e hijos que provienen de bordes
+            parent_idx = torch.where(selected_pts_mask)[0]  # (num_parents,)
+            is_parent_edge = torch.isin(
+                parent_idx, torch.tensor(gaussian_edge_indices, device="cuda")
+            )
+            is_child_of_edge = is_parent_edge.repeat_interleave(N)  # (M,)
+
+            # 2. Construir set de "attractores" (solo gaussianas de borde)
+            attractor_xyz = self.get_xyz[gaussian_edge_indices]  # (B, 3)
+
+            # 3. Calcular KNN para cada nueva gaussiana (solo se usará en hijos de borde)
+            new_xyz_exp = new_xyz.unsqueeze(1)  # (M, 1, 3)
+            attractor_xyz_exp = attractor_xyz.unsqueeze(0)  # (1, B, 3)
+            dists = torch.cdist(new_xyz_exp, attractor_xyz_exp)  # (M, B)
+            knn_indices = torch.topk(
+                dists, k=gravity_k, largest=False
+            ).indices  # (M, k)
+            knn_neighbors = attractor_xyz[knn_indices]  # (M, k, 3)
+
+            # 4. Calcular centroides, min, max
+            centroids = knn_neighbors.mean(dim=1)  # (M, 3)
+            local_min = knn_neighbors.min(dim=1).values  # (M, 3)
+            local_max = knn_neighbors.max(dim=1).values  # (M, 3)
+
+            # 5. Interpolación hacia el centro
+            pulled = gravity_strength * centroids + (1 - gravity_strength) * new_xyz
+
+            # 6. Solo actualizamos posiciones de hijos de bordes
+            new_xyz[is_child_of_edge] = pulled[is_child_of_edge]
+
+            # 7. Clampeamos dentro de la caja [min, max]
+            new_xyz[is_child_of_edge] = torch.max(
+                torch.min(new_xyz[is_child_of_edge], local_max[is_child_of_edge]),
+                local_min[is_child_of_edge],
+            )
+
+        # -----------------------------------------
+
         new_scaling = self.scaling_inverse_activation(
             self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)
         )

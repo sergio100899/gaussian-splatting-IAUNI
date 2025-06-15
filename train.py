@@ -18,7 +18,6 @@ from utils.loss_utils import (
     edge_loss,
     sobel_edges,
     depth_inference,
-    normal_inference,
     edge_aware_normal_loss,
 )  # noqa
 from gaussian_renderer import render, network_gui
@@ -103,7 +102,7 @@ def training(
     first_iter += 1
 
     L_depth = 0
-    L_normal = torch.tensor(0.0, device='cuda')
+    L_normal = torch.tensor(0.0, device="cuda")
 
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
@@ -192,7 +191,6 @@ def training(
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-
 
         # Ll1_edge = l1_edge_loss(image, gt_image, opt.lambda_edge)
         Ll1 = l1_loss(image, gt_image)
@@ -329,7 +327,6 @@ def training(
                     iteration > opt.densify_from_iter
                     and iteration % opt.densification_interval == 0
                 ):
-
                     ################################## uncomment later #################################
                     edges = sobel_edges(gt_image).squeeze()
                     x = viewspace_point_tensor[:, 0].long()
@@ -344,7 +341,6 @@ def training(
                     gaussian_edge_indices = indices_valid[edge_mask]
                     # gaussian_edge_indices = None
                     ################################################
-
 
                     size_threshold = (
                         20 if iteration > opt.opacity_reset_interval else None
