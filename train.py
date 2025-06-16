@@ -104,6 +104,7 @@ def training(
     L_depth = 0
     L_normal = torch.tensor(0.0, device="cuda")
 
+    #Iteration start
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -152,128 +153,131 @@ def training(
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # Pick a random Camera
-        if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
-            viewpoint_indices = list(range(len(viewpoint_stack)))
-        rand_idx = randint(0, len(viewpoint_indices) - 1)
-        viewpoint_cam = viewpoint_stack.pop(rand_idx)
-        # print(viewpoint_cam.image_name) #image file name
-        vind = viewpoint_indices.pop(rand_idx)
+        loss = 0
+        Ll1depth = 0
 
-        # Render
-        if (iteration - 1) == debug_from:
-            pipe.debug = True
+        for _ in range(2):
 
-        bg = torch.rand((3), device="cuda") if opt.random_background else background
+            # Pick a random Camera
+            if not viewpoint_stack:
+                viewpoint_stack = scene.getTrainCameras().copy()
+                viewpoint_indices = list(range(len(viewpoint_stack)))
+            rand_idx = randint(0, len(viewpoint_indices) - 1)
+            viewpoint_cam = viewpoint_stack.pop(rand_idx)
+            # print(viewpoint_cam.image_name) #image file name
 
-        render_pkg = render(
-            viewpoint_cam,
-            gaussians,
-            pipe,
-            bg,
-            use_trained_exp=dataset.train_test_exp,
-            separate_sh=SPARSE_ADAM_AVAILABLE,
-        )
-        image, depth_map, viewspace_point_tensor, visibility_filter, radii = (
-            render_pkg["render"],
-            render_pkg["depth"],
-            render_pkg["viewspace_points"],
-            render_pkg["visibility_filter"],
-            render_pkg["radii"],
-        )
-        # depth_np = depth_map.squeeze().cpu().numpy()
 
-        # image =rendered_image
-        if viewpoint_cam.alpha_mask is not None:
-            alpha_mask = viewpoint_cam.alpha_mask.cuda()
-            image *= alpha_mask
+            # Render
+            if (iteration - 1) == debug_from:
+                pipe.debug = True
 
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
+            bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        # Ll1_edge = l1_edge_loss(image, gt_image, opt.lambda_edge)
-        Ll1 = l1_loss(image, gt_image)
-        L_edge = edge_loss(image, gt_image)
-        if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
-        else:
-            ssim_value = ssim(image, gt_image)
+            render_pkg = render(
+                viewpoint_cam,
+                gaussians,
+                pipe,
+                bg,
+                use_trained_exp=dataset.train_test_exp,
+                separate_sh=SPARSE_ADAM_AVAILABLE,
+            )
+            image, depth_map, viewspace_point_tensor, visibility_filter, radii = (
+                render_pkg["render"],
+                render_pkg["depth"],
+                render_pkg["viewspace_points"],
+                render_pkg["visibility_filter"],
+                render_pkg["radii"],
+            )
 
-        if iteration < opt.densify_until_iter:
-            if iteration % 10 == 0:
-                # Rendereed Depth Map
-                depth_tensor_gpu = depth_map.squeeze().detach().to("cuda")
-                depth_np_norm = (depth_tensor_gpu - depth_tensor_gpu.min()) / (
-                    depth_tensor_gpu.max() - depth_tensor_gpu.min()
-                )
-                depth_np_tensor = depth_np_norm.to(torch.float32)
-                # Ground Truth Depth Map
-                depth_tensor = depth_inference(gt_image).squeeze(0).to("cuda")
-                # Depth Loss
-                L_depth = l1_loss(depth_np_tensor, depth_tensor)
+            # image =rendered_image
+            if viewpoint_cam.alpha_mask is not None:
+                alpha_mask = viewpoint_cam.alpha_mask.cuda()
+                image *= alpha_mask
 
-                # Normal Loss
-                normal_im = depth_to_normal(depth_map, viewpoint_cam)
-                L_normal = edge_aware_normal_loss(gt_image, normal_im.permute(2, 0, 1))
+            # Loss
+            gt_image = viewpoint_cam.original_image.cuda()
 
+            Ll1 = l1_loss(image, gt_image)
+            L_edge = edge_loss(image, gt_image)
+
+            if FUSED_SSIM_AVAILABLE:
+                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
             else:
-                L_depth = L_depth
-                L_normal = L_normal.detach()
-        else:
-            if iteration % 100 == 0:
-                # Rendereed Depth Map
-                depth_tensor_gpu = depth_map.squeeze().detach().to("cuda")
+                ssim_value = ssim(image, gt_image)
 
-                depth_np_norm = (depth_tensor_gpu - depth_tensor_gpu.min()) / (
-                    depth_tensor_gpu.max() - depth_tensor_gpu.min()
-                )
-                depth_np_tensor = depth_np_norm.to(torch.float32)
+            L_depth = 0
+            if iteration < opt.densify_until_iter:
+                if iteration % 10 == 0:
+                    # Rendereed Depth Map
+                    depth_tensor_gpu = depth_map.squeeze().detach().to("cuda")
+                    depth_np_norm = (depth_tensor_gpu - depth_tensor_gpu.min()) / (
+                        depth_tensor_gpu.max() - depth_tensor_gpu.min()
+                    )
+                    depth_np_tensor = depth_np_norm.to(torch.float32)
+                    # Ground Truth Depth Map
+                    depth_tensor = depth_inference(gt_image).squeeze(0).to("cuda")
+                    # Depth Loss
+                    L_depth = l1_loss(depth_np_tensor, depth_tensor)
 
-                # Ground Truth Depth Map
-                depth_tensor_gt = depth_inference(gt_image).squeeze(0).to("cuda")
-                # Depth Loss
-                L_depth = l1_loss(depth_np_tensor, depth_tensor_gt)
-
-                # Normal Loss
-                normal_im = depth_to_normal(depth_map, viewpoint_cam)
-                L_normal = edge_aware_normal_loss(gt_image, normal_im.permute(2, 0, 1))
+                else:
+                    L_depth = L_depth
             else:
-                L_depth = L_depth
-                L_normal = L_normal.detach()
+                if iteration % 100 == 0:
+                    # Rendereed Depth Map
+                    depth_tensor_gpu = depth_map.squeeze().detach().to("cuda")
 
-        loss = (
-            (1.0 - opt.lambda_dssim) * Ll1
-            + opt.lambda_dssim * (1.0 - ssim_value)
-            + 0.2 * L_depth
-            + 0.2 * L_edge
-            + 0.2 * L_normal
-        )
+                    depth_np_norm = (depth_tensor_gpu - depth_tensor_gpu.min()) / (
+                        depth_tensor_gpu.max() - depth_tensor_gpu.min()
+                    )
+                    depth_np_tensor = depth_np_norm.to(torch.float32)
 
-        # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+                    # Ground Truth Depth Map
+                    depth_tensor_gt = depth_inference(gt_image).squeeze(0).to("cuda")
+                    # Depth Loss
+                    L_depth = l1_loss(depth_np_tensor, depth_tensor_gt)
 
-        # Depth regularization
-        Ll1depth_pure = 0.0
-        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
-            invDepth = render_pkg["depth"]
-            mono_invdepth = viewpoint_cam.invdepthmap.cuda()
-            depth_mask = viewpoint_cam.depth_mask.cuda()
+                else:
+                    L_depth = L_depth
 
-            Ll1depth_pure = torch.abs((invDepth - mono_invdepth) * depth_mask).mean()
-            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure
-            loss += Ll1depth
-            Ll1depth = Ll1depth.item()
-        else:
-            Ll1depth = 0
+            loss_cam = (
+                (1.0 - opt.lambda_dssim) * Ll1
+                + opt.lambda_dssim * (1.0 - ssim_value)
+                + 0.2 * L_depth
+                + 0.2 * L_edge
+            )
+
+            loss += loss_cam
+            Ll1depth += L_depth
+
+            if iteration > opt.densify_from_iter and iteration < opt.densify_until_iter:
+                # ------------------------------------------
+                # Edge indices
+                # ------------------------------------------
+                edges = sobel_edges(gt_image).squeeze()
+                x = viewspace_point_tensor[:, 0].long()
+                y = viewspace_point_tensor[:, 1].long()
+                H, W = edges.shape
+                valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+                x_valid = x[valid]
+                y_valid = y[valid]
+                indices_valid = valid.nonzero(as_tuple=False).squeeze()
+                edge_values = edges[y_valid, x_valid]
+                edge_mask = edge_values > 0.6
+                new_edge_indices = indices_valid[edge_mask]
+                gaussian_edge_indices = torch.cat(
+                    (gaussian_edge_indices, new_edge_indices), dim=0
+                )
+                gaussian_edge_indices = torch.unique(gaussian_edge_indices)
+
 
         loss.backward()
-
         iter_end.record()
 
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
+            # ema_Ll1depth_for_log = 0
 
             if iteration % 10 == 0:
                 progress_bar.set_postfix(
@@ -327,20 +331,6 @@ def training(
                     iteration > opt.densify_from_iter
                     and iteration % opt.densification_interval == 0
                 ):
-                    ################################## uncomment later #################################
-                    edges = sobel_edges(gt_image).squeeze()
-                    x = viewspace_point_tensor[:, 0].long()
-                    y = viewspace_point_tensor[:, 1].long()
-                    H, W = edges.shape
-                    valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
-                    x_valid = x[valid]
-                    y_valid = y[valid]
-                    indices_valid = valid.nonzero(as_tuple=False).squeeze()
-                    edge_values = edges[y_valid, x_valid]
-                    edge_mask = edge_values > 0.5
-                    gaussian_edge_indices = indices_valid[edge_mask]
-                    # gaussian_edge_indices = None
-                    ################################################
 
                     size_threshold = (
                         20 if iteration > opt.opacity_reset_interval else None
