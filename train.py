@@ -156,6 +156,8 @@ def training(
         loss = 0
         Ll1depth = 0
 
+        gaussian_edge_indices = torch.tensor([], dtype=torch.long).to("cuda")
+
         for _ in range(2):
 
             # Pick a random Camera
@@ -164,6 +166,7 @@ def training(
                 viewpoint_indices = list(range(len(viewpoint_stack)))
             rand_idx = randint(0, len(viewpoint_indices) - 1)
             viewpoint_cam = viewpoint_stack.pop(rand_idx)
+            vind = viewpoint_indices.pop(rand_idx)
             # print(viewpoint_cam.image_name) #image file name
 
 
@@ -263,7 +266,7 @@ def training(
                 indices_valid = valid.nonzero(as_tuple=False).squeeze()
                 edge_values = edges[y_valid, x_valid]
                 edge_mask = edge_values > 0.6
-                new_edge_indices = indices_valid[edge_mask]
+                new_edge_indices = indices_valid[edge_mask].to("cuda")
                 gaussian_edge_indices = torch.cat(
                     (gaussian_edge_indices, new_edge_indices), dim=0
                 )
