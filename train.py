@@ -29,6 +29,8 @@ from tqdm import tqdm
 from utils.image_utils import psnr, depth_to_normal
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import numpy as np
+from PIL import Image
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -209,6 +211,7 @@ def training(
                 ssim_value = ssim(image, gt_image)
 
             L_depth = 0
+            L_normal = 0
             if iteration < opt.densify_until_iter:
                 if iteration % 10 == 0:
                     # Rendereed Depth Map
@@ -222,8 +225,30 @@ def training(
                     # Depth Loss
                     L_depth = l1_loss(depth_np_tensor, depth_tensor)
 
+                    if iteration % 500 ==0:
+                        normal_im_gt = depth_to_normal(depth_tensor, viewpoint_cam).squeeze()
+                        normal_im_render = depth_to_normal(depth_map, viewpoint_cam).squeeze()
+
+                        L_normal = l1_loss(normal_im_gt, normal_im_render)
+
+                        normal_im_gt = normal_im_gt.cpu().numpy()  # Convertir a NumPy
+                        normal_im_gt = (normal_im_gt - normal_im_gt.min()) / (normal_im_gt.max() - normal_im_gt.min())  # Normalizar
+                        normal_im_gt = (normal_im_gt * 255).astype(np.uint8)  # Convertir a uint8
+    
+                        normal_im_render = normal_im_render.detach().cpu().numpy() # Convertir a NumPy
+                        normal_im_render = (normal_im_render - normal_im_render.min()) / (normal_im_render.max() - normal_im_render.min())  # Normalizar
+                        normal_im_render = (normal_im_render * 255).astype(np.uint8)  # Convertir a uint8
+    
+    
+                        # image = Image.fromarray(normal_im_gt)
+                        # image.save(f"./normals/gt/normals_gt_{iteration}.png")
+    
+                        # image = Image.fromarray(normal_im_render)
+                        # image.save(f"./normals/rd/normals_rd_{iteration}.png")
+
                 else:
                     L_depth = L_depth
+                    L_normal = L_normal
             else:
                 if iteration % 100 == 0:
                     # Rendereed Depth Map
@@ -235,18 +260,41 @@ def training(
                     depth_np_tensor = depth_np_norm.to(torch.float32)
 
                     # Ground Truth Depth Map
-                    depth_tensor_gt = depth_inference(gt_image).squeeze(0).to("cuda")
+                    depth_tensor = depth_inference(gt_image).squeeze(0).to("cuda")
                     # Depth Loss
-                    L_depth = l1_loss(depth_np_tensor, depth_tensor_gt)
+                    L_depth = l1_loss(depth_np_tensor, depth_tensor)
+
+                    if iteration % 500 ==0:
+                        normal_im_gt = depth_to_normal(depth_tensor, viewpoint_cam).squeeze()
+                        normal_im_render = depth_to_normal(depth_map, viewpoint_cam).squeeze()
+
+                        L_normal = l1_loss(normal_im_gt, normal_im_render)
+
+                        normal_im_gt = normal_im_gt.cpu().numpy()  # Convertir a NumPy
+                        normal_im_gt = (normal_im_gt - normal_im_gt.min()) / (normal_im_gt.max() - normal_im_gt.min())  # Normalizar
+                        normal_im_gt = (normal_im_gt * 255).astype(np.uint8)  # Convertir a uint8
+    
+                        normal_im_render = normal_im_render.detach().cpu().numpy() # Convertir a NumPy
+                        normal_im_render = (normal_im_render - normal_im_render.min()) / (normal_im_render.max() - normal_im_render.min())  # Normalizar
+                        normal_im_render = (normal_im_render * 255).astype(np.uint8)  # Convertir a uint8
+    
+    
+                        # image = Image.fromarray(normal_im_gt)
+                        # image.save(f"./normals/gt/normals_gt_{iteration}.png")
+    
+                        # image = Image.fromarray(normal_im_render)
+                        # image.save(f"./normals/rd/normals_rd_{iteration}.png")
 
                 else:
                     L_depth = L_depth
+                    L_normal = L_normal
 
             loss_cam = (
                 (1.0 - opt.lambda_dssim) * Ll1
                 + opt.lambda_dssim * (1.0 - ssim_value)
                 + 0.2 * L_depth
                 + 0.2 * L_edge
+                + 0.2 * L_normal
             )
 
             loss += loss_cam
@@ -265,7 +313,7 @@ def training(
                 y_valid = y[valid]
                 indices_valid = valid.nonzero(as_tuple=False).squeeze()
                 edge_values = edges[y_valid, x_valid]
-                edge_mask = edge_values > 0.6
+                edge_mask = edge_values > 0.7
                 new_edge_indices = indices_valid[edge_mask].to("cuda")
                 gaussian_edge_indices = torch.cat(
                     (gaussian_edge_indices, new_edge_indices), dim=0
