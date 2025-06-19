@@ -225,7 +225,7 @@ def training(
                     # Depth Loss
                     L_depth = l1_loss(depth_np_tensor, depth_tensor)
 
-                    if iteration % 500 ==0:
+                    if iteration % 20 ==0:
                         normal_im_gt = depth_to_normal(depth_tensor, viewpoint_cam).squeeze()
                         normal_im_render = depth_to_normal(depth_map, viewpoint_cam).squeeze()
 
@@ -264,7 +264,7 @@ def training(
                     # Depth Loss
                     L_depth = l1_loss(depth_np_tensor, depth_tensor)
 
-                    if iteration % 500 ==0:
+                    if iteration % 200 ==0:
                         normal_im_gt = depth_to_normal(depth_tensor, viewpoint_cam).squeeze()
                         normal_im_render = depth_to_normal(depth_map, viewpoint_cam).squeeze()
 
