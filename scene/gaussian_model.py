@@ -711,35 +711,16 @@ class GaussianModel:
                 0.40  # o ajusta a 1.0 / 1.5 según pruebas
             )
             grads = grads * edge_weights.unsqueeze(-1)
-
-            n_gaussians = grads.shape[0]  # total de gaussianas
-            is_edge = torch.zeros(n_gaussians, dtype=torch.bool, device=grads.device)
-            is_edge[gaussian_edge_indices] = True
-            gaussian_non_edge_indices = torch.where(~is_edge)[0]
-
         # ------------------------------------------
 
         self.tmp_radii = radii
         self.densify_and_clone(grads, max_grad, extent, gaussian_edge_indices)
         self.densify_and_split(grads, max_grad, extent, 2, gaussian_edge_indices)
 
-        prune_mask = torch.ones_like(n_gaussians,dtype=torch.bool, device=grads.device)
-
-        if gaussian_edge_indices is not None:
-            # Zona NO borde → umbral estándar
-            prune_mask[gaussian_non_edge_indices] = (self.get_opacity[gaussian_non_edge_indices] < min_opacity).squeeze()
-
-            # Zona de borde → umbral más permisivo
-            prune_mask[gaussian_edge_indices] = (self.get_opacity[gaussian_edge_indices] < (min_opacity * 0.5)).squeeze()
-        else:
-            # Sin distinción → usar umbral global
-            prune_mask = (self.get_opacity < min_opacity).squeeze()
-
-
-        prune_mask = (self.get_opacity < min_opacity).squeeze() # opacity pruning
+        prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
-            big_points_vs = self.max_radii2D > max_screen_size #big radious pruning
-            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent #big covariance pruning
+            big_points_vs = self.max_radii2D > max_screen_size
+            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(
                 torch.logical_or(prune_mask, big_points_vs), big_points_ws
             )
