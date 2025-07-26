@@ -149,8 +149,8 @@ def render(
     rendered_image = rendered_image.clamp(0, 1)
     out = {
         "render": rendered_image,  # redered image from the pointclud (3, H, W)
-        "viewspace_points": screenspace_points,  # gaussians that belong to the 2D projection (N, 3)
-        "visibility_filter": (radii > 0).nonzero(),  # gaussians indexes
+        "viewspace_points": screenspace_points,  # gaussians that belong to the 2D projection (N, 3) with coordinates in the view space
+        "visibility_filter": (radii > 0).nonzero(),  # gaussians indexes of the 2D projection that are visible
         "radii": radii,
         "depth": depth_image,
     }
