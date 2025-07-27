@@ -207,8 +207,29 @@ def training(
                 image *= alpha_mask
 
             # Loss
+            weight_edge = (
+                args.edge_weight
+                if args.use_sags and iteration % args.edge_interval == 0
+                else 0.0
+            )
+            weight_depth = (
+                args.depth_weight
+                if args.use_sags and iteration % args.depth_interval == 0
+                else 0.0
+            )
+            weight_normal = (
+                args.normal_weight
+                if args.use_sags and iteration % args.normal_interval == 0
+                else 0.0
+            )
+
             Ll1 = l1_loss(image, gt_image)
-            L_edge = edge_loss(image, gt_image)
+            # L_edge = edge_loss(image, gt_image)
+            L_edge = (
+                edge_loss(image, gt_image)
+                if weight_edge > 0
+                else torch.tensor(0.0, device="cuda")
+            )
 
             if FUSED_SSIM_AVAILABLE:
                 ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
@@ -223,20 +244,30 @@ def training(
             render_depth_img = depth_map_normalized.to(torch.float32)
 
             # Depth Loss
-            L_depth = l1_loss(render_depth_img, viewpoint_cam.gt_depth)
+            # L_depth = l1_loss(render_depth_img, viewpoint_cam.gt_depth)
+            L_depth = (
+                l1_loss(render_depth_img, viewpoint_cam.gt_depth)
+                if weight_depth > 0
+                else torch.tensor(0.0, device="cuda")
+            )
 
             # Rendereed NOrmal Map
             render_normal_im = depth_to_normal(depth_map, viewpoint_cam).squeeze()
 
             # Normal Loss
-            L_normal = l1_loss(render_normal_im, viewpoint_cam.gt_normals)
+            # L_normal = l1_loss(render_normal_im, viewpoint_cam.gt_normals)
+            L_normal = (
+                l1_loss(render_normal_im, viewpoint_cam.gt_normals)
+                if weight_normal > 0
+                else torch.tensor(0.0, device="cuda")
+            )
 
             loss_cam = (
                 (1.0 - opt.lambda_dssim) * Ll1
                 + opt.lambda_dssim * (1.0 - ssim_value)
-                + 0.2 * L_depth
-                + 0.2 * L_edge
-                + 0.2 * L_normal
+                + weight_edge * L_edge
+                + weight_depth * L_depth
+                + weight_normal * L_normal
             )
 
             loss += loss_cam
@@ -516,6 +547,50 @@ if __name__ == "__main__":
     parser.add_argument("--disable_viewer", action="store_true", default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
+
+    parser.add_argument(
+        "--use_sags", action="store_true", help="Activa el método de optimización SAGS."
+    )
+
+    parser.add_argument(
+        "--edge_interval",
+        type=int,
+        default=1,
+        help="Intervalo de activación para L_edge.",
+    )
+    parser.add_argument(
+        "--edge_weight",
+        type=float,
+        default=0.2,
+        help="Peso para L_edge cuando está activa.",
+    )
+
+    parser.add_argument(
+        "--depth_interval",
+        type=int,
+        default=10,
+        help="Intervalo de activación para L_depth.",
+    )
+    parser.add_argument(
+        "--depth_weight",
+        type=float,
+        default=0.15,
+        help="Peso para L_depth cuando está activa.",
+    )
+
+    parser.add_argument(
+        "--normal_interval",
+        type=int,
+        default=20,
+        help="Intervalo de activación para L_normal.",
+    )
+    parser.add_argument(
+        "--normal_weight",
+        type=float,
+        default=0.05,
+        help="Peso para L_normal cuando está activa.",
+    )
+
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
