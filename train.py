@@ -18,7 +18,6 @@ from utils.loss_utils import (
     edge_loss,
     sobel_edges,
     depth_inference,
-    edge_aware_normal_loss,
 )  # noqa
 from gaussian_renderer import render, network_gui
 import sys
@@ -29,8 +28,6 @@ from tqdm import tqdm
 from utils.image_utils import psnr, depth_to_normal
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
-import numpy as np
-from PIL import Image
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -105,12 +102,11 @@ def training(
 
     Ll1depth = 0
 
-
     # loss = torch.tensor(0.0, device="cuda", dtype=torch.float32)
     L_depth = torch.tensor(0.0, device="cuda", dtype=torch.float32)
     L_normal = torch.tensor(0.0, device="cuda", dtype=torch.float32)
 
-    #Iteration start
+    # Iteration start
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -159,13 +155,11 @@ def training(
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-
         gaussian_edge_indices = torch.tensor([], dtype=torch.long).to("cuda")
 
         loss = 0
 
         for _ in range(1):
-
             # Pick a random Camera
             if not viewpoint_stack:
                 viewpoint_stack = scene.getTrainCameras().copy()
@@ -175,6 +169,15 @@ def training(
             vind = viewpoint_indices.pop(rand_idx)
             # print(viewpoint_cam.image_name) #image file name
 
+            gt_image = viewpoint_cam.original_image.cuda()
+
+            if not hasattr(viewpoint_cam, "gt_depth"):
+                with torch.no_grad():
+                    gt_depth = depth_inference(gt_image).squeeze(0).to("cuda")
+                    viewpoint_cam.gt_depth = gt_depth
+
+                    gt_normals = depth_to_normal(gt_depth, viewpoint_cam).squeeze()
+                    viewpoint_cam.gt_normals = gt_normals
 
             # Render
             if (iteration - 1) == debug_from:
@@ -204,8 +207,6 @@ def training(
                 image *= alpha_mask
 
             # Loss
-            gt_image = viewpoint_cam.original_image.cuda()
-
             Ll1 = l1_loss(image, gt_image)
             L_edge = edge_loss(image, gt_image)
 
@@ -214,36 +215,29 @@ def training(
             else:
                 ssim_value = ssim(image, gt_image)
 
-
             # Rendereed Depth Map
-            depth_tensor_gpu = depth_map.squeeze().detach().to("cuda")
-            depth_np_norm = (depth_tensor_gpu - depth_tensor_gpu.min()) / (depth_tensor_gpu.max() - depth_tensor_gpu.min())
-            depth_np_tensor = depth_np_norm.to(torch.float32)
-            # Ground Truth Depth Map
-            depth_tensor = depth_inference(gt_image).squeeze(0).to("cuda")
+            depth_map_detached = depth_map.squeeze().detach().to("cuda")
+            depth_map_normalized = (depth_map_detached - depth_map_detached.min()) / (
+                depth_map_detached.max() - depth_map_detached.min()
+            )
+            render_depth_img = depth_map_normalized.to(torch.float32)
+
             # Depth Loss
-            L_depth = l1_loss(depth_np_tensor, depth_tensor) 
+            L_depth = l1_loss(render_depth_img, viewpoint_cam.gt_depth)
 
+            # Rendereed NOrmal Map
+            render_normal_im = depth_to_normal(depth_map, viewpoint_cam).squeeze()
 
-            normal_im_gt = depth_to_normal(depth_tensor, viewpoint_cam).squeeze()
-            normal_im_render = depth_to_normal(depth_map, viewpoint_cam).squeeze()
+            # Normal Loss
+            L_normal = l1_loss(render_normal_im, viewpoint_cam.gt_normals)
 
-            L_normal = l1_loss(normal_im_gt, normal_im_render)      
-
-            # print(type(Ll1),type(ssim_value),type(L_depth), type(L_edge),type(L_normal))
-            losses = torch.stack([Ll1, ssim_value])
-
-            weights = torch.softmax(losses * 0.5, dim=0)
-
-            loss_cam = (weights * losses).sum()
-
-            # loss_cam = (
-            #     (1.0 - opt.lambda_dssim) * Ll1
-            #     + opt.lambda_dssim * (1.0 - ssim_value)
-            #     + 0.2 * L_depth
-            #     + 0.2 * L_edge
-            #     + 0.2 * L_normal
-            # )
+            loss_cam = (
+                (1.0 - opt.lambda_dssim) * Ll1
+                + opt.lambda_dssim * (1.0 - ssim_value)
+                + 0.2 * L_depth
+                + 0.2 * L_edge
+                + 0.2 * L_normal
+            )
 
             loss += loss_cam
             Ll1depth += 0
@@ -262,9 +256,12 @@ def training(
 
                 # Filtrado estricto de valores válidos y finitos
                 valid = (
-                    (x >= 0) & (x < W) &
-                    (y >= 0) & (y < H) &
-                    torch.isfinite(x) & torch.isfinite(y)
+                    (x >= 0)
+                    & (x < W)
+                    & (y >= 0)
+                    & (y < H)
+                    & torch.isfinite(x)
+                    & torch.isfinite(y)
                 )
 
                 # Solo usamos los valores válidos para indexar
@@ -288,7 +285,6 @@ def training(
                     (gaussian_edge_indices, new_edge_indices), dim=0
                 )
                 gaussian_edge_indices = torch.unique(gaussian_edge_indices)
-
 
         loss.backward()
         iter_end.record()
@@ -351,7 +347,6 @@ def training(
                     iteration > opt.densify_from_iter
                     and iteration % opt.densification_interval == 0
                 ):
-
                     size_threshold = (
                         20 if iteration > opt.opacity_reset_interval else None
                     )
