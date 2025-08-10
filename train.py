@@ -342,8 +342,10 @@ def training(
             training_report(
                 tb_writer,
                 iteration,
-                # Ll1_edge,
                 Ll1,
+                L_edge,
+                L_depth,
+                L_normal,
                 loss,
                 l1_loss,
                 iter_start.elapsed_time(iter_end),
@@ -442,6 +444,9 @@ def training_report(
     tb_writer,
     iteration,
     Ll1,
+    L_edge,
+    L_depth,
+    L_normal,
     loss,
     l1_loss,
     elapsed,
@@ -455,6 +460,10 @@ def training_report(
         tb_writer.add_scalar("train_loss_patches/l1_loss", Ll1.item(), iteration)
         tb_writer.add_scalar("train_loss_patches/total_loss", loss.item(), iteration)
         tb_writer.add_scalar("iter_time", elapsed, iteration)
+
+        tb_writer.add_scalar("train_loss_patches/edge_loss", L_edge.item(), iteration)
+        tb_writer.add_scalar("train_loss_patches/depth_loss", L_depth.item(), iteration)
+        tb_writer.add_scalar("train_loss_patches/normal_loss", L_normal.item(), iteration)
 
     # Report test and samples of training set
     if iteration in testing_iterations:
@@ -568,7 +577,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--depth_interval",
         type=int,
-        default=10,
+        default=20,
         help="Intervalo de activación para L_depth.",
     )
     parser.add_argument(
@@ -581,7 +590,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--normal_interval",
         type=int,
-        default=20,
+        default=40,
         help="Intervalo de activación para L_normal.",
     )
     parser.add_argument(
