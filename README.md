@@ -1,17 +1,11 @@
 # 3D Gaussian Splatting for Real-Time Radiance Field Rendering
-Bernhard Kerbl*, Georgios Kopanas*, Thomas Leimkühler, George Drettakis (* indicates equal contribution)<br>
-| [Webpage](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) | [Full Paper](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_high.pdf) | [Video](https://youtu.be/T_kXY43VZnk) | [Other GRAPHDECO Publications](http://www-sop.inria.fr/reves/publis/gdindex.php) | [FUNGRAPH project page](https://fungraph.inria.fr) |<br>
-| [T&T+DB COLMAP (650MB)](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/input/tandt_db.zip) | [Pre-trained Models (14 GB)](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip) | [Viewers for Windows (60MB)](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/binaries/viewers.zip) | [Evaluation Images (7 GB)](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/evaluation/images.zip) |<br>
+Sergio Ortiz*, Rodney Lopez*, Edgar Medina(* indicates equal contribution)<br>
+| [Webpage](paper web page) | [Full Paper](pdf web link) |<br>
 ![Teaser image](assets/teaser.png)
 
-This repository contains the official authors implementation associated with the paper "3D Gaussian Splatting for Real-Time Radiance Field Rendering", which can be found [here](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/). We further provide the reference images used to create the error metrics reported in the paper, as well as recently created, pre-trained models. 
+This repository contains the official authors implementation associated with the paper "paper name"
 
-<a href="https://www.inria.fr/"><img height="100" src="assets/logo_inria.png"> </a>
-<a href="https://univ-cotedazur.eu/"><img height="100" src="assets/logo_uca.png"> </a>
-<a href="https://www.mpi-inf.mpg.de"><img height="100" src="assets/logo_mpi.png"> </a> 
-<a href="https://team.inria.fr/graphdeco/"> <img style="width:100%;" src="assets/logo_graphdeco.png"></a>
-
-Abstract: *Radiance Field methods have recently revolutionized novel-view synthesis of scenes captured with multiple photos or videos. However, achieving high visual quality still requires neural networks that are costly to train and render, while recent faster methods inevitably trade off speed for quality. For unbounded and complete scenes (rather than isolated objects) and 1080p resolution rendering, no current method can achieve real-time display rates. We introduce three key elements that allow us to achieve state-of-the-art visual quality while maintaining competitive training times and importantly allow high-quality real-time (≥ 30 fps) novel-view synthesis at 1080p resolution. First, starting from sparse points produced during camera calibration, we represent the scene with 3D Gaussians that preserve desirable properties of continuous volumetric radiance fields for scene optimization while avoiding unnecessary computation in empty space; Second, we perform interleaved optimization/density control of the 3D Gaussians, notably optimizing anisotropic covariance to achieve an accurate representation of the scene; Third, we develop a fast visibility-aware rendering algorithm that supports anisotropic splatting and both accelerates training and allows realtime rendering. We demonstrate state-of-the-art visual quality and real-time rendering on several established datasets.*
+Abstract: *3D Gaussian Splatting (3DGS) has become a leading approach for representing 3D scenes in various computer vision tasks. However, the lack of explicit geometric constraints introduces fundamental ambiguities whereby infinite 3D configurations can result in perceptually equivalent 2D projections, manifesting as floating geometric artifacts and structural inconsistencies, especially in regions with sparse textures. We address these geometric ambiguities through a principle-based regularization framework that incorporates depth and surface normal priors. Our approach extends the standard loss function with geometric regularization terms that constrain the solution space toward geometrically plausible representations while preserving photorealistic rendering quality. In addition, we introduce a regularization mechanism based on epistemic uncertainty that quantifies the confidence of the model through three Gaussian parameters: spatial covariance magnitude, inverse opacity, and density variance. This uncertainty-aware regularization effectively guides optimization in regions with sparse or ambiguous data. Experimental results demonstrate improvements in benchmarks while maintaining representation quality, establishing a solid foundation for geometry-aware 3D Gaussian representations.*
 
 <section class="section" id="BibTeX">
   <div class="container is-max-desktop content">
@@ -22,9 +16,9 @@ Abstract: *Radiance Field methods have recently revolutionized novel-view synthe
       journal      = {ACM Transactions on Graphics},
       number       = {4},
       volume       = {42},
-      month        = {July},
-      year         = {2023},
-      url          = {https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/}
+      month        = {August},
+      year         = {2025},
+      url          = {paper web page}
 }</code></pre>
   </div>
 </section>
@@ -34,15 +28,6 @@ Abstract: *Radiance Field methods have recently revolutionized novel-view synthe
 ## Funding and Acknowledgments
 
 This research was funded by the ERC Advanced grant FUNGRAPH No 788065. The authors are grateful to Adobe for generous donations, the OPAL infrastructure from Université Côte d’Azur and for the HPC resources from GENCI–IDRIS (Grant 2022-AD011013409). The authors thank the anonymous reviewers for their valuable feedback, P. Hedman and A. Tewari for proofreading earlier drafts also T. Müller, A. Yu and S. Fridovich-Keil for helping with the comparisons.
-
-## NEW FEATURES !
-
-We have limited resources for maintaining and updating the code. However, we have added a few new features since the original release that are inspired by some of the excellent work many other researchers have been doing on 3DGS. We will be adding other features within the ability of our resources.
-
-**Update of October 2024**: We integrated [training speed acceleration](#training-speed-acceleration) and made it compatible with [depth regularization](#depth-regularization), [anti-aliasing](#anti-aliasing) and [exposure compensation](#exposure-compensation). We have enhanced the SIBR real time viewer by correcting bugs and adding features in the [Top View](#sibr-top-view) that allows visualization of input and user cameras.
-
-**Update of Spring 2024**:
-Orange Labs has kindly added [OpenXR support](#openxr-support) for VR viewing. 
 
 ## Step-by-step Tutorial
 
@@ -57,12 +42,12 @@ User [camenduru](https://github.com/camenduru) was kind enough to provide a Cola
 The repository contains submodules, thus please check it out with 
 ```shell
 # SSH
-git clone git@github.com:graphdeco-inria/gaussian-splatting.git --recursive
+git clone git@github.com:sergio100899/gaussian-splatting-IAUNI.git --recursive
 ```
 or
 ```shell
 # HTTPS
-git clone https://github.com/graphdeco-inria/gaussian-splatting --recursive
+git clone https://github.com/sergio100899/gaussian-splatting-IAUNI --recursive
 ```
 
 ## Overview
@@ -89,22 +74,22 @@ The optimizer uses PyTorch and CUDA extensions in a Python environment to produc
 - Please see FAQ for smaller VRAM configurations
 
 ### Software Requirements
-- Conda (recommended for easy setup)
+- uv (recommended for easy setup)
 - C++ Compiler for PyTorch extensions (we used Visual Studio 2019 for Windows)
-- CUDA SDK 11 for PyTorch extensions, install *after* Visual Studio (we used 11.8, **known issues with 11.6**)
+- CUDA SDK 12 for PyTorch extensions, install *after* Visual Studio (we used 12.8)
 - C++ Compiler and CUDA SDK must be compatible
 
 ### Setup
 
 #### Local Setup
 
-Our default, provided install method is based on Conda package and environment management:
+Our default, provided install method is based on uv package and environment management:
 ```shell
 SET DISTUTILS_USE_SDK=1 # Windows only
 conda env create --file environment.yml
 conda activate gaussian_splatting
 ```
-Please note that this process assumes that you have CUDA SDK **11** installed, not **12**. For modifications, see below.
+Please note that this process assumes that you have CUDA SDK **12** installed, see below.
 
 Tip: Downloading packages and creating a new environment with Conda can require a significant amount of disk space. By default, Conda will use the main system hard drive. You can avoid this by specifying a different package download location and an environment on a different drive:
 
@@ -113,14 +98,6 @@ conda config --add pkgs_dirs <Drive>/<pkg_path>
 conda env create --file environment.yml --prefix <Drive>/<env_path>/gaussian_splatting
 conda activate <Drive>/<env_path>/gaussian_splatting
 ```
-
-#### Modifications
-
-If you can afford the disk space, we recommend using our environment files for setting up a training environment identical to ours. If you want to make modifications, please note that major version changes might affect the results of our method. However, our (limited) experiments suggest that the codebase works just fine inside a more up-to-date environment (Python 3.8, PyTorch 2.0.0, CUDA 12). Make sure to create an environment where PyTorch and its CUDA runtime version match and the installed CUDA SDK has no major version difference with PyTorch's CUDA version.
-
-#### Known Issues
-
-Some users experience problems building the submodules on Windows (```cl.exe: File not found``` or similar). Please consider the workaround for this problem from the FAQ.
 
 ### Running
 
