@@ -126,6 +126,43 @@ def depth_loss(network_output: torch.tensor, gt: torch.tensor):
     nt_depth = depth_inference(network_output)
     return torch.abs((nt_depth - gt_depth)).mean()
 
+def align_mean_std_and_compute_loss(rendered_depth, gt_depth):
+    """
+    Alinea el mapa de profundidad renderizado con el ground truth usando la media y la desviación estándar,
+    y luego calcula la pérdida L1. Esto evita el problema de la escala relativa.
+    """
+    gt_depth_detached = gt_depth.detach()
+
+    mean_gt = gt_depth_detached.mean()
+    std_gt = gt_depth_detached.std()
+
+    mean_rendered = rendered_depth.mean()
+    std_rendered = rendered_depth.std()
+
+
+    aligned_depth = (rendered_depth - mean_rendered) / (std_rendered + 1e-6) * std_gt + mean_gt
+
+
+    return l1_loss(aligned_depth, gt_depth_detached)
+
+def cosine_similarity_loss(rendered_normals, gt_normals):
+    """
+    Calcula la pérdida como 1 menos la similitud de coseno entre los vectores normales.
+    """
+    if rendered_normals.shape[-1] != 3:
+        # Si la forma es [C, H, W], permutar a [H, W, C]
+        rendered_normals = rendered_normals.permute(1, 2, 0)
+        gt_normals = gt_normals.permute(1, 2, 0)
+
+    rendered_normals = torch.nn.functional.normalize(rendered_normals, p=2, dim=-1)
+    gt_normals = torch.nn.functional.normalize(gt_normals, p=2, dim=-1)
+
+    cosine_similarity = torch.sum(rendered_normals * gt_normals, dim=-1)
+
+    loss = 1.0 - cosine_similarity
+
+    return loss.mean()
+
 
 def gaussian(window_size, sigma):
     gauss = torch.Tensor(

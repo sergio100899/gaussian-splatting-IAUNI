@@ -18,6 +18,8 @@ from utils.loss_utils import (
     edge_loss,
     sobel_edges,
     depth_inference,
+    align_mean_std_and_compute_loss,
+    cosine_similarity_loss
 )  # noqa
 from gaussian_renderer import render, network_gui
 import sys
@@ -246,7 +248,8 @@ def training(
             # Depth Loss
             # L_depth = l1_loss(render_depth_img, viewpoint_cam.gt_depth)
             L_depth = (
-                l1_loss(render_depth_img, viewpoint_cam.gt_depth)
+                # l1_loss(render_depth_img, viewpoint_cam.gt_depth)
+                align_mean_std_and_compute_loss(depth_map.squeeze(), viewpoint_cam.gt_depth)
                 if weight_depth > 0
                 else torch.tensor(0.0, device="cuda")
             )
@@ -257,7 +260,8 @@ def training(
             # Normal Loss
             # L_normal = l1_loss(render_normal_im, viewpoint_cam.gt_normals)
             L_normal = (
-                l1_loss(render_normal_im, viewpoint_cam.gt_normals)
+                # l1_loss(render_normal_im, viewpoint_cam.gt_normals)
+                cosine_similarity_loss(render_normal_im, viewpoint_cam.gt_normals)
                 if weight_normal > 0
                 else torch.tensor(0.0, device="cuda")
             )
