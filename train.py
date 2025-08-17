@@ -105,10 +105,6 @@ def training(
 
     Ll1depth = 0
 
-    # loss = torch.tensor(0.0, device="cuda", dtype=torch.float32)
-    L_depth = torch.tensor(0.0, device="cuda", dtype=torch.float32)
-    L_normal = torch.tensor(0.0, device="cuda", dtype=torch.float32)
-
     # Iteration start
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
@@ -158,126 +154,101 @@ def training(
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        gaussian_edge_indices = torch.tensor([], dtype=torch.long).to("cuda")
+        # Pick a random Camera
+        if not viewpoint_stack:
+            viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_indices = list(range(len(viewpoint_stack)))
+        rand_idx = randint(0, len(viewpoint_indices) - 1)
+        viewpoint_cam = viewpoint_stack.pop(rand_idx)
+        vind = viewpoint_indices.pop(rand_idx)
+        # print(viewpoint_cam.image_name) #image file name
 
-        loss = 0
+        gt_image = viewpoint_cam.original_image.cuda()
 
-        for _ in range(1):
-            # Pick a random Camera
-            if not viewpoint_stack:
-                viewpoint_stack = scene.getTrainCameras().copy()
-                viewpoint_indices = list(range(len(viewpoint_stack)))
-            rand_idx = randint(0, len(viewpoint_indices) - 1)
-            viewpoint_cam = viewpoint_stack.pop(rand_idx)
-            vind = viewpoint_indices.pop(rand_idx)
-            # print(viewpoint_cam.image_name) #image file name
+        if not hasattr(viewpoint_cam, "gt_depth"):
+            with torch.no_grad():
+                gt_depth = depth_inference(gt_image).squeeze(0).to("cuda")
+                viewpoint_cam.gt_depth = gt_depth
 
-            gt_image = viewpoint_cam.original_image.cuda()
+                gt_normals = depth_to_normal(gt_depth, viewpoint_cam).squeeze()
+                viewpoint_cam.gt_normals = gt_normals
 
-            if not hasattr(viewpoint_cam, "gt_depth"):
-                with torch.no_grad():
-                    gt_depth = depth_inference(gt_image).squeeze(0).to("cuda")
-                    viewpoint_cam.gt_depth = gt_depth
+        # Render
+        if (iteration - 1) == debug_from:
+            pipe.debug = True
 
-                    gt_normals = depth_to_normal(gt_depth, viewpoint_cam).squeeze()
-                    viewpoint_cam.gt_normals = gt_normals
+        bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-            # Render
-            if (iteration - 1) == debug_from:
-                pipe.debug = True
+        render_pkg = render(
+            viewpoint_cam,
+            gaussians,
+            pipe,
+            bg,
+            use_trained_exp=dataset.train_test_exp,
+            separate_sh=SPARSE_ADAM_AVAILABLE,
+        )
+        image, depth_map, viewspace_point_tensor, visibility_filter, radii = (
+            render_pkg["render"],
+            render_pkg["depth"],
+            render_pkg["viewspace_points"],
+            render_pkg["visibility_filter"],
+            render_pkg["radii"],
+        )
 
-            bg = torch.rand((3), device="cuda") if opt.random_background else background
+        # image =rendered_image
+        if viewpoint_cam.alpha_mask is not None:
+            alpha_mask = viewpoint_cam.alpha_mask.cuda()
+            image *= alpha_mask
 
-            render_pkg = render(
-                viewpoint_cam,
-                gaussians,
-                pipe,
-                bg,
-                use_trained_exp=dataset.train_test_exp,
-                separate_sh=SPARSE_ADAM_AVAILABLE,
-            )
-            image, depth_map, viewspace_point_tensor, visibility_filter, radii = (
-                render_pkg["render"],
-                render_pkg["depth"],
-                render_pkg["viewspace_points"],
-                render_pkg["visibility_filter"],
-                render_pkg["radii"],
-            )
+        # Loss
+        weight_edge = get_loss_weight(
+            iteration,
+            args.edge_weight,
+            args.edge_interval,
+            args.activation_fn,
+        )
+        weight_depth = get_loss_weight(
+            iteration,
+            args.depth_weight,
+            args.depth_interval,
+            args.activation_fn,
+        )
+        weight_normal = get_loss_weight(
+            iteration,
+            args.normal_weight,
+            args.normal_interval,
+            args.activation_fn,
+        )
 
-            # image =rendered_image
-            if viewpoint_cam.alpha_mask is not None:
-                alpha_mask = viewpoint_cam.alpha_mask.cuda()
-                image *= alpha_mask
+        Ll1 = l1_loss(image, gt_image)
+        L_edge = edge_loss(image, gt_image)
 
-            # Loss
-            weight_edge = get_loss_weight(
-                iteration,
-                args.edge_weight,
-                args.edge_interval,
-                args.activation_fn,
-            )
-            weight_depth = get_loss_weight(
-                iteration,
-                args.depth_weight,
-                args.depth_interval,
-                args.activation_fn,
-            )
-            weight_normal = get_loss_weight(
-                iteration,
-                args.normal_weight,
-                args.normal_interval,
-                args.activation_fn,
-            )
+        if FUSED_SSIM_AVAILABLE:
+            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+        else:
+            ssim_value = ssim(image, gt_image)
 
-            Ll1 = l1_loss(image, gt_image)
-            # L_edge = edge_loss(image, gt_image)
-            L_edge = (
-                edge_loss(image, gt_image)
-                if weight_edge > 0
-                else torch.tensor(0.0, device="cuda")
-            )
+        # Depth Loss
+        # L_depth = l1_loss(render_depth_img, viewpoint_cam.gt_depth)
+        L_depth = align_mean_std_and_compute_loss(
+            depth_map.squeeze(), viewpoint_cam.gt_depth
+        )
 
-            if FUSED_SSIM_AVAILABLE:
-                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
-            else:
-                ssim_value = ssim(image, gt_image)
+        # Rendereed NOrmal Map
+        render_normal_im = depth_to_normal(depth_map, viewpoint_cam).squeeze()
 
-            # Rendereed Depth Map
-            depth_map_detached = depth_map.squeeze().detach().to("cuda")
-            depth_map_normalized = (depth_map_detached - depth_map_detached.min()) / (
-                depth_map_detached.max() - depth_map_detached.min()
-            )
-            render_depth_img = depth_map_normalized.to(torch.float32)
+        # Normal Loss
+        L_normal = cosine_similarity_loss(render_normal_im, viewpoint_cam.gt_normals)
 
-            # Depth Loss
-            # L_depth = l1_loss(render_depth_img, viewpoint_cam.gt_depth)
-            L_depth = (
-                # l1_loss(render_depth_img, viewpoint_cam.gt_depth)
-                align_mean_std_and_compute_loss(
-                    depth_map.squeeze(), viewpoint_cam.gt_depth
-                )
-            )
+        loss = (
+            (1.0 - opt.lambda_dssim) * Ll1
+            + opt.lambda_dssim * (1.0 - ssim_value)
+            + weight_edge * L_edge
+            + weight_depth * L_depth
+            + weight_normal * L_normal
+        )
 
-            # Rendereed NOrmal Map
-            render_normal_im = depth_to_normal(depth_map, viewpoint_cam).squeeze()
-
-            # Normal Loss
-            # L_normal = l1_loss(render_normal_im, viewpoint_cam.gt_normals)
-            L_normal = (
-                # l1_loss(render_normal_im, viewpoint_cam.gt_normals)
-                cosine_similarity_loss(render_normal_im, viewpoint_cam.gt_normals)
-            )
-
-            loss_cam = (
-                (1.0 - opt.lambda_dssim) * Ll1
-                + opt.lambda_dssim * (1.0 - ssim_value)
-                + weight_edge * L_edge
-                + weight_depth * L_depth
-                + weight_normal * L_normal
-            )
-
-            loss += loss_cam
-            Ll1depth += 0
+        Ll1depth += 0
 
         loss.backward()
         iter_end.record()
