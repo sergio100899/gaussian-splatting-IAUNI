@@ -11,15 +11,15 @@
 
 import os
 import torch
+import math
 from random import randint
 from utils.loss_utils import (
     l1_loss,
     ssim,
     edge_loss,
-    sobel_edges,
     depth_inference,
     align_mean_std_and_compute_loss,
-    cosine_similarity_loss
+    cosine_similarity_loss,
 )  # noqa
 from gaussian_renderer import render, network_gui
 import sys
@@ -62,6 +62,7 @@ def training(
     checkpoint_iterations,
     checkpoint,
     debug_from,
+    args,
 ):
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(
@@ -209,20 +210,23 @@ def training(
                 image *= alpha_mask
 
             # Loss
-            weight_edge = (
-                args.edge_weight
-                if args.use_sags and iteration % args.edge_interval == 0
-                else 0.0
+            weight_edge = get_loss_weight(
+                iteration,
+                args.edge_weight,
+                args.edge_interval,
+                args.activation_fn,
             )
-            weight_depth = (
-                args.depth_weight
-                if args.use_sags and iteration % args.depth_interval == 0
-                else 0.0
+            weight_depth = get_loss_weight(
+                iteration,
+                args.depth_weight,
+                args.depth_interval,
+                args.activation_fn,
             )
-            weight_normal = (
-                args.normal_weight
-                if args.use_sags and iteration % args.normal_interval == 0
-                else 0.0
+            weight_normal = get_loss_weight(
+                iteration,
+                args.normal_weight,
+                args.normal_interval,
+                args.activation_fn,
             )
 
             Ll1 = l1_loss(image, gt_image)
@@ -249,9 +253,9 @@ def training(
             # L_depth = l1_loss(render_depth_img, viewpoint_cam.gt_depth)
             L_depth = (
                 # l1_loss(render_depth_img, viewpoint_cam.gt_depth)
-                align_mean_std_and_compute_loss(depth_map.squeeze(), viewpoint_cam.gt_depth)
-                if weight_depth > 0
-                else torch.tensor(0.0, device="cuda")
+                align_mean_std_and_compute_loss(
+                    depth_map.squeeze(), viewpoint_cam.gt_depth
+                )
             )
 
             # Rendereed NOrmal Map
@@ -262,8 +266,6 @@ def training(
             L_normal = (
                 # l1_loss(render_normal_im, viewpoint_cam.gt_normals)
                 cosine_similarity_loss(render_normal_im, viewpoint_cam.gt_normals)
-                if weight_normal > 0
-                else torch.tensor(0.0, device="cuda")
             )
 
             loss_cam = (
@@ -276,50 +278,6 @@ def training(
 
             loss += loss_cam
             Ll1depth += 0
-
-            if iteration > opt.densify_from_iter and iteration < opt.densify_until_iter:
-                # ------------------------------------------
-                # Edge indices
-                # ------------------------------------------
-                # Supongamos que edges es un tensor (H, W) con los bordes
-                edges = sobel_edges(gt_image).squeeze()  # tamaño: (H, W)
-                H, W = edges.shape
-
-                # viewspace_point_tensor debe tener coordenadas 2D válidas
-                x = viewspace_point_tensor[:, 0]
-                y = viewspace_point_tensor[:, 1]
-
-                # Filtrado estricto de valores válidos y finitos
-                valid = (
-                    (x >= 0)
-                    & (x < W)
-                    & (y >= 0)
-                    & (y < H)
-                    & torch.isfinite(x)
-                    & torch.isfinite(y)
-                )
-
-                # Solo usamos los valores válidos para indexar
-                x_valid = x[valid].long()
-                y_valid = y[valid].long()
-
-                # Aquí usamos los índices válidos para extraer los valores de bordes
-                edge_values = edges[y_valid, x_valid]
-
-                # Máscara de valores con borde fuerte
-                edge_mask = edge_values > 0.7
-
-                # Indices originales de las gaussianas válidas
-                indices_valid = valid.nonzero(as_tuple=False).squeeze()
-
-                # Seleccionamos las gaussianas correspondientes a los bordes fuertes
-                new_edge_indices = indices_valid[edge_mask].to("cuda")
-
-                # Actualizamos el set global de gaussianas en bordes
-                gaussian_edge_indices = torch.cat(
-                    (gaussian_edge_indices, new_edge_indices), dim=0
-                )
-                gaussian_edge_indices = torch.unique(gaussian_edge_indices)
 
         loss.backward()
         iter_end.record()
@@ -393,7 +351,6 @@ def training(
                         scene.cameras_extent,
                         size_threshold,
                         radii,
-                        gaussian_edge_indices=None,
                     )
 
                 if iteration % opt.opacity_reset_interval == 0 or (
@@ -467,7 +424,9 @@ def training_report(
 
         tb_writer.add_scalar("train_loss_patches/edge_loss", L_edge.item(), iteration)
         tb_writer.add_scalar("train_loss_patches/depth_loss", L_depth.item(), iteration)
-        tb_writer.add_scalar("train_loss_patches/normal_loss", L_normal.item(), iteration)
+        tb_writer.add_scalar(
+            "train_loss_patches/normal_loss", L_normal.item(), iteration
+        )
 
     # Report test and samples of training set
     if iteration in testing_iterations:
@@ -540,6 +499,29 @@ def training_report(
         torch.cuda.empty_cache()
 
 
+def get_loss_weight(iteration, max_weight, interval, activation_fn):
+    """Calculates the weight for a loss term based on the activation function."""
+    if interval <= 0 or max_weight == 0:
+        return 0.0
+
+    if activation_fn == "binary":
+        return max_weight if iteration > 0 and iteration % interval == 0 else 0.0
+
+    # For periodic functions, we need the position within the cycle
+    cycle_progress = (iteration % interval) / float(interval)  # from 0 to 1
+
+    if activation_fn == "cosine":
+        # Cosine wave that is 1 at the start/end of cycle
+        return max_weight * (0.5 * (1 + math.cos(2 * math.pi * cycle_progress)))
+
+    if activation_fn == "sigmoid":
+        # Gaussian pulse centered at the start of the cycle
+        sigma = 0.15  # width of the pulse, as a fraction of the interval
+        return max_weight * math.exp(-0.5 * ((cycle_progress / sigma) ** 2))
+
+    return 0.0
+
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
@@ -560,10 +542,6 @@ if __name__ == "__main__":
     parser.add_argument("--disable_viewer", action="store_true", default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
-
-    parser.add_argument(
-        "--use_sags", action="store_true", help="Activa el método de optimización SAGS."
-    )
 
     parser.add_argument(
         "--edge_interval",
@@ -603,6 +581,13 @@ if __name__ == "__main__":
         default=0.05,
         help="Peso para L_normal cuando está activa.",
     )
+    parser.add_argument(
+        "--activation_fn",
+        type=str,
+        default="binary",
+        choices=["binary", "cosine", "sigmoid"],
+        help="Función de activación para las pérdidas auxiliares (binary, cosine, sigmoid).",
+    )
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -625,6 +610,7 @@ if __name__ == "__main__":
         args.checkpoint_iterations,
         args.start_checkpoint,
         args.debug_from,
+        args,
     )
 
     # All done
