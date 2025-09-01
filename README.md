@@ -1,4 +1,4 @@
-# 3D Gaussian Splatting for Real-Time Radiance Field Rendering
+# Progressive Incremental Scheduling for Multi-loss in Gaussian Splatting (PRISM-GS)
 Sergio Ortiz*, Rodney Lopez*, Edgar Medina(* indicates equal contribution)<br>
 | [Webpage](paper web page) | [Full Paper](pdf web link) |<br>
 ![Teaser image](assets/teaser.png)
@@ -7,35 +7,10 @@ This repository contains the official authors implementation associated with the
 
 Abstract: *3D Gaussian Splatting (3DGS) has become a leading approach for representing 3D scenes in various computer vision tasks. However, the lack of explicit geometric constraints introduces fundamental ambiguities whereby infinite 3D configurations can result in perceptually equivalent 2D projections, manifesting as floating geometric artifacts and structural inconsistencies, especially in regions with sparse textures. We address these geometric ambiguities through a principle-based regularization framework that incorporates depth and surface normal priors. Our approach extends the standard loss function with geometric regularization terms that constrain the solution space toward geometrically plausible representations while preserving photorealistic rendering quality. In addition, we introduce a regularization mechanism based on epistemic uncertainty that quantifies the confidence of the model through three Gaussian parameters: spatial covariance magnitude, inverse opacity, and density variance. This uncertainty-aware regularization effectively guides optimization in regions with sparse or ambiguous data. Experimental results demonstrate improvements in benchmarks while maintaining representation quality, establishing a solid foundation for geometry-aware 3D Gaussian representations.*
 
-<section class="section" id="BibTeX">
-  <div class="container is-max-desktop content">
-    <h2 class="title">BibTeX</h2>
-    <pre><code>@Article{kerbl3Dgaussians,
-      author       = {Kerbl, Bernhard and Kopanas, Georgios and Leimk{\"u}hler, Thomas and Drettakis, George},
-      title        = {3D Gaussian Splatting for Real-Time Radiance Field Rendering},
-      journal      = {ACM Transactions on Graphics},
-      number       = {4},
-      volume       = {42},
-      month        = {August},
-      year         = {2025},
-      url          = {paper web page}
-}</code></pre>
-  </div>
-</section>
-
-
-
 ## Funding and Acknowledgments
 
-This research was funded by the ERC Advanced grant FUNGRAPH No 788065. The authors are grateful to Adobe for generous donations, the OPAL infrastructure from Université Côte d’Azur and for the HPC resources from GENCI–IDRIS (Grant 2022-AD011013409). The authors thank the anonymous reviewers for their valuable feedback, P. Hedman and A. Tewari for proofreading earlier drafts also T. Müller, A. Yu and S. Fridovich-Keil for helping with the comparisons.
 
-## Step-by-step Tutorial
 
-Jonathan Stephens made a fantastic step-by-step tutorial for setting up Gaussian Splatting on your machine, along with instructions for creating usable datasets from videos. If the instructions below are too dry for you, go ahead and check it out [here](https://www.youtube.com/watch?v=UXtuigy_wYc).
-
-## Colab
-
-User [camenduru](https://github.com/camenduru) was kind enough to provide a Colab template that uses this repo's source (status: August 2023!) for quick and easy access to the method. Please check it out [here](https://github.com/camenduru/gaussian-splatting-colab).
 
 ## Cloning the Repository
 
@@ -50,61 +25,48 @@ or
 git clone https://github.com/sergio100899/gaussian-splatting-IAUNI --recursive
 ```
 
-## Overview
-
-The codebase has 4 main components:
-- A PyTorch-based optimizer to produce a 3D Gaussian model from SfM inputs
-- A network viewer that allows to connect to and visualize the optimization process
-- An OpenGL-based real-time viewer to render trained models in real-time.
-- A script to help you turn your own images into optimization-ready SfM data sets
-
-The components have different requirements w.r.t. both hardware and software. They have been tested on Windows 10 and Ubuntu Linux 22.04. Instructions for setting up and running each of them are found in the sections below.
-
-
-
-
-## Optimizer
-
-The optimizer uses PyTorch and CUDA extensions in a Python environment to produce trained models. 
-
 ### Hardware Requirements
-
-- CUDA-ready GPU with Compute Capability 7.0+
-- 24 GB VRAM (to train to paper evaluation quality)
-- Please see FAQ for smaller VRAM configurations
+- CUDA-ready GPU with **Compute Capability 7.0+**
+- **32 GB VRAM** (required to reproduce the paper's evaluation quality)
 
 ### Software Requirements
-- uv (recommended for easy setup)
-- C++ Compiler for PyTorch extensions (we used Visual Studio 2019 for Windows)
-- CUDA SDK 12 for PyTorch extensions, install *after* Visual Studio (we used 12.8)
-- C++ Compiler and CUDA SDK must be compatible
+- **[uv](https://github.com/astral-sh/uv)** (recommended for easy setup)
+- **C++ Compiler** for PyTorch extensions (we used *Visual Studio 2019* on Windows)
+- **CUDA SDK 12** for PyTorch extensions, install *after* Visual Studio (we used *12.8*)
+- The **C++ Compiler** and **CUDA SDK** must be compatible
 
-### Setup
+### Dockerized Version
+If you plan to run the **Dockerized version**, make sure you also install the  
+**[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/)** to enable GPU support inside Docker.
+
+## Setup
 
 #### Local Setup
 
 Our default, provided install method is based on uv package and environment management:
 ```shell
-SET DISTUTILS_USE_SDK=1 # Windows only
-conda env create --file environment.yml
-conda activate gaussian_splatting
+# Create and activate environment with uv
+uv venv .venv
+source .venv/bin/activate   # Linux / macOS
+.venv\Scripts\activate      # Windows PowerShell
 ```
-Please note that this process assumes that you have CUDA SDK **12** installed, see below.
-
-Tip: Downloading packages and creating a new environment with Conda can require a significant amount of disk space. By default, Conda will use the main system hard drive. You can avoid this by specifying a different package download location and an environment on a different drive:
+Please note that this process assumes that you have CUDA SDK **12.8** installed, see below.
 
 ```shell
-conda config --add pkgs_dirs <Drive>/<pkg_path>
-conda env create --file environment.yml --prefix <Drive>/<env_path>/gaussian_splatting
-conda activate <Drive>/<env_path>/gaussian_splatting
+# Install dependencies
+uv pip install ".[torch]"
+uv pip install ".[base]" 
+uv pip install --no-build-isolation ".[submodules]"
 ```
+Alternative Setup with pip
+
 
 ### Running
 
 To run the optimizer, simply use
 
 ```shell
-python train.py -s <path to COLMAP or NeRF Synthetic dataset>
+python train.py -s <path of dataset> --activation_fn <activation type>
 ```
 
 <details>

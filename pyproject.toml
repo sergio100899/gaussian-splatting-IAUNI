@@ -20,7 +20,8 @@ base = [
     "opencv-python>=4.11.0.86",
     "plyfile>=1.1",
     "setuptools>=79.0.0",
-    "tqdm>=4.67.1"
+    "tqdm>=4.67.1",
+    "tensorboard"
 ]
 submodules = [
     "diff-gaussian-rasterization",
