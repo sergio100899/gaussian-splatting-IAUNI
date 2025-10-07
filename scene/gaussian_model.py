@@ -21,6 +21,7 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+import torch.nn.functional as F
 
 try:
     from diff_gaussian_rasterization import SparseGaussianAdam
@@ -133,6 +134,55 @@ class GaussianModel:
     @property
     def get_exposure(self):
         return self._exposure
+
+    def get_inv_cov(self):
+        """Calcula Σ⁻¹ = R * diag(1/s²) * Rᵀ usando build_rotation para pasar de cuaterniones a matrices."""
+        R = build_rotation(self._rotation)          # (M,3,3)
+        s = self.get_scaling                        # (M,3)
+        inv_scale = 1.0 / (s + 1e-8)
+        inv_cov = torch.bmm(R * inv_scale.unsqueeze(1)**2, R.transpose(1,2))
+        return inv_cov                              # (M,3,3)
+
+    def get_density_and_grad_knn(self, points: torch.Tensor, k: int = 32):
+        """
+        Versión eficiente: usa solo las k gaussianas más cercanas a cada punto.
+        """
+        mu = self.get_xyz                      # (M,3)
+        alpha = self.get_opacity               # (M,1)
+        inv_cov = self.get_inv_cov()           # (M,3,3)
+
+        # 1. Distancia euclidiana simple para encontrar vecinos
+        dists = torch.cdist(points, mu)        # (N,M)
+        knn_idx = torch.topk(dists, k, largest=False).indices  # (N,k)
+
+        # 2. Extraer solo las gaussianas locales
+        mu_k = mu[knn_idx]                     # (N,k,3)
+        inv_cov_k = inv_cov[knn_idx]           # (N,k,3,3)
+        alpha_k = alpha[knn_idx].squeeze(-1)   # (N,k)
+
+        delta = points.unsqueeze(1) - mu_k     # (N,k,3)
+        quad = torch.einsum('nkj,nkjl,nkl->nk', delta, inv_cov_k, delta)
+        d_i = alpha_k * torch.exp(-0.5 * quad)
+        d = d_i.sum(dim=1, keepdim=True) + 1e-12
+
+        temp = torch.einsum('nkj,nkjl->nkl', delta, inv_cov_k)
+        grad_d = -(d_i.unsqueeze(-1) * temp).sum(dim=1)
+        return d, grad_d, knn_idx
+
+
+    def get_sdf_and_normals(self, points: torch.Tensor, k: int = 32):
+        d, grad_d, knn_idx = self.get_density_and_grad_knn(points, k=k)
+        # s_local adaptativo: promedio de las escalas de las k gaussianas más cercanas
+        s_k = self.get_scaling[knn_idx]             # (N,k,3)
+        s_local = s_k.mean(dim=(1,2), keepdim=True) # (N,1)
+
+        eps = 1e-8
+        u = -2.0 * torch.log(d + eps)
+        sqrt_u = torch.sqrt(torch.clamp(u, min=eps))
+        f = s_local * sqrt_u
+        grad_f = - s_local * grad_d / (d * sqrt_u + eps)
+        normals = F.normalize(grad_f, dim=1)
+        return f, normals, grad_f
 
     def get_exposure_from_name(self, image_name):
         if self.pretrained_exposures is None:

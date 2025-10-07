@@ -145,6 +145,34 @@ def align_mean_std_and_compute_loss(rendered_depth, gt_depth):
 
     return l1_loss(aligned_depth, gt_depth_detached)
 
+def align_mean_std_and_compute_gradient_loss(
+    rendered_depth, gt_depth, gt_image, alpha=1.0
+):
+    """
+    Alinea la profundidad renderizada con la del ground truth (media y std) y calcula una pérdida
+    logarítmica ponderada por los bordes de la imagen ground truth. Esto ayuda a que la pérdida
+    sea menos sensible en zonas con muchos detalles (bordes) y más en zonas planas.
+    """
+    gt_depth_detached = gt_depth.detach()
+
+    mean_gt = gt_depth_detached.mean()
+    std_gt = gt_depth_detached.std()
+
+    mean_rendered = rendered_depth.mean()
+    std_rendered = rendered_depth.std()
+
+    aligned_depth = (rendered_depth - mean_rendered) / (
+        std_rendered + 1e-6
+    ) * std_gt + mean_gt
+
+    gt_edges = sobel_edges(gt_image)
+
+    depth_diff = torch.abs(gt_depth_detached - aligned_depth)
+
+    gradient_loss = torch.exp(-gt_edges * alpha) * torch.log(1 + depth_diff)
+
+    return gradient_loss.mean()
+
 def cosine_similarity_loss(rendered_normals, gt_normals):
     """
     Calcula la pérdida como 1 menos la similitud de coseno entre los vectores normales.
@@ -229,3 +257,43 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
 def fast_ssim(img1, img2):
     ssim_map = FusedSSIMMap.apply(C1, C2, img1, img2)
     return ssim_map.mean()
+
+def eikonal_loss(grad_sdf):
+    """
+    L_eik = (||∇f(p)|| - 1)²
+    """
+    return (torch.linalg.norm(grad_sdf, dim=-1) - 1).pow(2).mean()
+
+def normal_consistency_loss(normals, points, k=5):
+    """
+    L_cons = 1 - |n_i ⋅ n_j|
+    """
+    if points.shape[0] < k + 1:
+        return torch.tensor(0.0, device=points.device)
+    
+    with torch.no_grad():
+        dists = torch.cdist(points, points)
+        knn_idx = torch.topk(dists, k + 1, largest=False, sorted=True).indices[:, 1:]
+
+    neighbor_normals = normals[knn_idx.view(-1)].view(points.shape[0], k, 3)
+    central_normals = normals.unsqueeze(1).expand(-1, k, -1)
+
+    dot_product = torch.sum(central_normals * neighbor_normals, dim=2)
+    
+    return (1.0 - torch.abs(dot_product)).mean()
+
+def curvature_loss(normals, points, k=5):
+    """
+    L_curv = ||n_i - n_j||²
+    """
+    if points.shape[0] < k + 1:
+        return torch.tensor(0.0, device=points.device)
+
+    with torch.no_grad():
+        dists = torch.cdist(points, points)
+        knn_idx = torch.topk(dists, k + 1, largest=False, sorted=True).indices[:, 1:]
+
+    neighbor_normals = normals[knn_idx.view(-1)].view(points.shape[0], k, 3)
+    central_normals = normals.unsqueeze(1).expand(-1, k, -1)
+
+    return (central_normals - neighbor_normals).pow(2).sum(dim=-1).mean()
