@@ -20,8 +20,8 @@ from utils.general_utils import safe_state
 from utils.loss_utils import (
     depth_inference,
     align_mean_std_and_compute_loss,
-    cosine_similarity_loss,
     sobel_edges,
+    depth_normal_consistency_loss,
 )
 from utils.image_utils import depth_to_normal
 from argparse import ArgumentParser
@@ -50,6 +50,7 @@ def render_set(
     # Variables para acumular losses en test
     total_depth_loss = 0.0
     total_normal_loss = 0.0
+    total_normal_cons_loss = 0.0
     total_edge_loss = 0.0
     num_views = 0
     individual_losses = []  # Lista para guardar losses individuales
@@ -93,12 +94,18 @@ def render_set(
             separate_sh=separate_sh,
         )
         rendering = rendering_pkg["render"]
-        rendering_depth = rendering_pkg["depth"]
-        rendering_normal = depth_to_normal(rendering_depth, view).squeeze()
+        rendering_depth = rendering_pkg[
+            "depth"
+        ]  # Usar la profundidad del render principal
+
+        # Obtener profundidad y normales renderizadas directamente, como en train.py
+        _, rendering_normal_map = gaussians.render_depth_and_normal(view)
+
+        # Calcular edges para comparación
         rendering_edges = sobel_edges(rendering).squeeze()
         gt = view.original_image[0:3, :, :]
         gt_depth = depth_inference(gt).squeeze(0).to("cuda")
-        gt_normals = depth_to_normal(gt_depth, view).squeeze()
+        gt_normals = depth_to_normal(view, gt_depth).squeeze()
         gt_edges = sobel_edges(gt).squeeze()
 
         if args.train_test_exp:
@@ -118,11 +125,10 @@ def render_set(
         torchvision.utils.save_image(
             gt_depth, os.path.join(gts_depth_path, "{0:05d}".format(idx) + ".png")
         )
-        rendering_normal = rendering_normal.permute(2, 0, 1)
-        rendering_normal = (rendering_normal + 1.0) / 2.0
-        rendering_normal = torch.clamp(rendering_normal, 0.0, 1.0)
+        # Guardar el mapa de normales renderizado directamente
+        rendering_normal_save = (rendering_normal_map + 1.0) / 2.0
         torchvision.utils.save_image(
-            rendering_normal,
+            rendering_normal_save,
             os.path.join(render_normals_path, "{0:05d}".format(idx) + ".png"),
         )
 
@@ -151,20 +157,20 @@ def render_set(
                 rendering_depth.squeeze(), gt_depth
             )
 
-            # Calcular normal loss usando la misma lógica que train.py
-            # Convertir de [C, H, W] a [H, W, C] para el cálculo de loss
-            rendering_normal_for_loss = rendering_normal.permute(1, 2, 0)
-            gt_normals_for_loss = gt_normals.permute(1, 2, 0)
-            normal_loss = cosine_similarity_loss(
-                rendering_normal_for_loss, gt_normals_for_loss
+            # Calcular depth-normal consistency loss, como en train.py
+            normal_cons_loss = depth_normal_consistency_loss(
+                rendering_depth, rendering_normal_map, view
             )
 
             # Calcular edge loss (usando los edges ya calculados)
             edge_loss_value = torch.abs((rendering_edges - gt_edges)).mean()
 
+            # La 'normal_loss' original ahora es la 'normal_cons_loss'
+            normal_loss = normal_cons_loss
+
             # Acumular losses
             total_depth_loss += depth_loss.item()
-            total_normal_loss += normal_loss.item()
+            total_normal_cons_loss += normal_cons_loss.item()
             total_edge_loss += edge_loss_value.item()
             num_views += 1
 
@@ -173,7 +179,7 @@ def render_set(
                 {
                     "image_idx": idx,
                     "depth_loss": depth_loss.item(),
-                    "normal_loss": normal_loss.item(),
+                    "normal_cons_loss": normal_cons_loss.item(),
                     "edge_loss": edge_loss_value.item(),
                 }
             )
@@ -181,7 +187,7 @@ def render_set(
     # Guardar losses en archivo txt solo para test
     if name == "test" and num_views > 0:
         avg_depth_loss = total_depth_loss / num_views
-        avg_normal_loss = total_normal_loss / num_views
+        avg_normal_cons_loss = total_normal_cons_loss / num_views
         avg_edge_loss = total_edge_loss / num_views
 
         # Crear directorio para losses si no existe
@@ -201,22 +207,22 @@ def render_set(
             for loss_info in individual_losses:
                 f.write(f"Image {loss_info['image_idx']:05d}:\n")
                 f.write(f"  Depth Loss:  {loss_info['depth_loss']:.6f}\n")
-                f.write(f"  Normal Loss: {loss_info['normal_loss']:.6f}\n")
+                f.write(f"  Normal Cons Loss: {loss_info['normal_cons_loss']:.6f}\n")
                 f.write(f"  Edge Loss:   {loss_info['edge_loss']:.6f}\n")
                 f.write("-" * 30 + "\n")
 
             f.write("\nSUMMARY:\n")
             f.write("=" * 50 + "\n")
             f.write(f"Average Depth Loss:  {avg_depth_loss:.6f}\n")
-            f.write(f"Average Normal Loss: {avg_normal_loss:.6f}\n")
+            f.write(f"Average Normal Cons Loss: {avg_normal_cons_loss:.6f}\n")
             f.write(f"Average Edge Loss:   {avg_edge_loss:.6f}\n")
             f.write(f"Total Depth Loss:    {total_depth_loss:.6f}\n")
-            f.write(f"Total Normal Loss:   {total_normal_loss:.6f}\n")
+            f.write(f"Total Normal Cons Loss:   {total_normal_cons_loss:.6f}\n")
             f.write(f"Total Edge Loss:     {total_edge_loss:.6f}\n")
 
         print(f"Test losses saved to: {losses_file}")
         print(f"Average Depth Loss: {avg_depth_loss:.6f}")
-        print(f"Average Normal Loss: {avg_normal_loss:.6f}")
+        print(f"Average Normal Consistency Loss: {avg_normal_cons_loss:.6f}")
         print(f"Average Edge Loss: {avg_edge_loss:.6f}")
 
 

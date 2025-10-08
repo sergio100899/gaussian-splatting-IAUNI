@@ -10,7 +10,6 @@
 #
 
 import torch
-import faiss
 import numpy as np
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
@@ -22,12 +21,14 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
-import torch.nn.functional as F
 from pytorch3d.transforms import quaternion_to_matrix
+from diff_gaussian_rasterization import (
+    GaussianRasterizationSettings,
+    GaussianRasterizer,
+)
 
 try:
     from diff_gaussian_rasterization import SparseGaussianAdam
-    from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 except:
     pass
 
@@ -49,26 +50,6 @@ class GaussianModel:
         self.inverse_opacity_activation = inverse_sigmoid
 
         self.rotation_activation = torch.nn.functional.normalize
-
-    def build_faiss_index(self):
-        """
-        Construye o actualiza un índice FAISS para búsqueda k-NN.
-        Lo guarda en self.faiss_index para evitar recalcular en cada paso.
-        """
-        mu = self.get_xyz.detach().cpu().numpy().astype("float32")
-    
-        # Si ya existe, actualizamos
-        if hasattr(self, "faiss_index") and self.faiss_index.ntotal == mu.shape[0]:
-            return self.faiss_index
-    
-        # 🔹 Usa FAISS GPU si está disponible
-        res = faiss.StandardGpuResources()
-        index_flat = faiss.IndexFlatL2(3)
-        self.faiss_index = faiss.index_cpu_to_gpu(res, 0, index_flat)
-        self.faiss_index.add(mu)
-    
-        return self.faiss_index
-
 
     def __init__(self, sh_degree, optimizer_type="default"):
         self.active_sh_degree = 0
@@ -160,95 +141,19 @@ class GaussianModel:
 
     def get_inv_cov(self):
         """Calcula Σ⁻¹ = R * diag(1/s²) * Rᵀ usando build_rotation para pasar de cuaterniones a matrices."""
-        R = build_rotation(self._rotation)          # (M,3,3)
-        s = self.get_scaling                        # (M,3)
+        R = build_rotation(self._rotation)  # (M,3,3)
+        s = self.get_scaling  # (M,3)
         inv_scale = 1.0 / (s + 1e-8)
-        inv_cov = torch.bmm(R * inv_scale.unsqueeze(1)**2, R.transpose(1,2))
-        return inv_cov                              # (M,3,3)
-
-    def get_density_and_grad_knn(self, points: torch.Tensor, k: int = 32, batch_size: int = 512, chunk_size: int = 1024):
-        """
-        Cálculo eficiente de densidad y gradiente usando k-NN por bloques.
-        """
-        num_points = points.shape[0]
-        device = points.device
-        mu = self.get_xyz
-        alpha = self.get_opacity
-        inv_cov = self.get_inv_cov()
-    
-        knn_idx_list = []
-    
-        for i in range(0, num_points, batch_size):
-            batch_points = points[i:i + batch_size]
-            min_dists = torch.full((batch_points.shape[0], k), float("inf"), device=device)
-            min_idx = torch.zeros((batch_points.shape[0], k), dtype=torch.long, device=device)
-    
-            # 🔹 divide el conjunto de gaussianas en trozos pequeños
-            for j in range(0, mu.shape[0], chunk_size):
-                mu_chunk = mu[j:j + chunk_size]
-                d_chunk = torch.cdist(batch_points, mu_chunk)
-                d_topk, idx_topk = torch.topk(d_chunk, k, largest=False)
-                idx_topk += j  # compensar índice global
-    
-                # 🔹 Combina con los mínimos previos
-                all_d = torch.cat([min_dists, d_topk], dim=1)
-                all_idx = torch.cat([min_idx, idx_topk], dim=1)
-                new_d, new_order = torch.topk(all_d, k, largest=False)
-                new_idx = torch.gather(all_idx, 1, new_order)
-                min_dists, min_idx = new_d, new_idx
-    
-                del d_chunk, d_topk, idx_topk, all_d, all_idx
-                torch.cuda.empty_cache()
-    
-            knn_idx_list.append(min_idx)
-    
-        knn_idx = torch.cat(knn_idx_list, dim=0)
-        del knn_idx_list
-        torch.cuda.empty_cache()
-    
-        # 🔹 Continua igual que antes
-        mu_k = mu[knn_idx]
-        inv_cov_k = inv_cov[knn_idx]
-        alpha_k = alpha[knn_idx].squeeze(-1)
-    
-        delta = points.unsqueeze(1) - mu_k
-        quad = torch.einsum('nkj,nkjl,nkl->nk', delta, inv_cov_k, delta)
-        d_i = alpha_k * torch.exp(-0.5 * quad)
-        d = d_i.sum(dim=1, keepdim=True) + 1e-12
-    
-        temp = torch.einsum('nkj,nkjl->nkl', delta, inv_cov_k)
-        grad_d = -(d_i.unsqueeze(-1) * temp).sum(dim=1)
-    
-        return d, grad_d
-
-    def get_sdf_and_normals(self, points: torch.Tensor, k: int = 32):
-        d, grad_d = self.get_density_and_grad_knn(points, k=k)
-        
-        # Evita densidades negativas o nulas
-        d = torch.clamp(d, min=1e-6, max=1.0)
-    
-        # Escala promedio global (una sola por modelo)
-        s_local = self.get_scaling.mean().clamp(min=1e-3)
-        s_local = s_local * torch.ones_like(d)  # (N,1)
-    
-        eps = 1e-8
-        u = -2.0 * torch.log(torch.clamp(d, min=1e-6))
-        sqrt_u = torch.sqrt(torch.clamp(u, min=eps))
-    
-        f = s_local * sqrt_u
-        grad_f = - s_local * grad_d / (torch.clamp(d * sqrt_u, min=eps))
-        
-        grad_f = torch.nan_to_num(grad_f, nan=0.0, posinf=0.0, neginf=0.0)
-        normals = F.normalize(grad_f, dim=1)
-        
-        return f, normals, grad_f
-
+        inv_cov = torch.bmm(R * inv_scale.unsqueeze(1) ** 2, R.transpose(1, 2))
+        return inv_cov  # (M,3,3)
 
     def get_smallest_axis(self, return_idx=False):
         """Returns the smallest axis of the Gaussians."""
-        
+
         rotation_matrices = quaternion_to_matrix(self.get_rotation)
-        smallest_axis_idx = self.get_scaling.min(dim=-1)[1][..., None, None].expand(-1, 3, -1)
+        smallest_axis_idx = self.get_scaling.min(dim=-1)[1][..., None, None].expand(
+            -1, 3, -1
+        )
         smallest_axis = rotation_matrices.gather(2, smallest_axis_idx)
         if return_idx:
             return smallest_axis.squeeze(dim=2), smallest_axis_idx[..., 0, 0]
@@ -258,87 +163,103 @@ class GaussianModel:
         """Returns the normals of the Gaussians."""
         return self.get_smallest_axis()
 
-    def render_depth_and_normal(self, viewpoint_camera):
+    def render_depth_and_normal(self, viewpoint_camera, scaling_modifier=1.0):
         """
         Renders depth and normal maps for a given camera view.
         """
+
+        tanfovx = np.tan(viewpoint_camera.FoVx * 0.5)
+        tanfovy = np.tan(viewpoint_camera.FoVy * 0.5)
 
         # Crear una configuración de rasterización para la profundidad
         raster_settings_depth = GaussianRasterizationSettings(
             image_height=int(viewpoint_camera.image_height),
             image_width=int(viewpoint_camera.image_width),
-            tanfovx=viewpoint_camera.tanfovx,
-            tanfovy=viewpoint_camera.tanfovy,
-            bg=torch.zeros(3, device="cuda"), # El fondo no importa para la profundidad
-            scale_modifier=viewpoint_camera.scale_modifier,
+            tanfovx=tanfovx,
+            tanfovy=tanfovy,
+            bg=torch.zeros(3, device="cuda"),  # El fondo no importa para la profundidad
+            scale_modifier=scaling_modifier,
             viewmatrix=viewpoint_camera.world_view_transform,
             projmatrix=viewpoint_camera.full_proj_transform,
             sh_degree=0,
             campos=viewpoint_camera.camera_center,
             prefiltered=False,
-            debug=False
+            debug=False,
+            antialiasing=False,  # Añadir este argumento
         )
 
         rasterizer_depth = GaussianRasterizer(raster_settings=raster_settings_depth)
 
         # Preparar datos para el renderizado de profundidad
         means3D = self.get_xyz
-        
+
         # Usar la profundidad en espacio de vista como "color" para el renderizado
         points_in_camera_space = torch.matmul(
-            viewpoint_camera.world_view_transform.T, 
-            torch.cat([means3D, torch.ones(len(means3D), 1, device='cuda')], dim=-1).T
+            viewpoint_camera.world_view_transform.T,
+            torch.cat([means3D, torch.ones(len(means3D), 1, device="cuda")], dim=-1).T,
         ).T[..., :3]
-        
-        depth_features = points_in_camera_space[..., 2:3].repeat(1, 3) # Usar Z como feature
-        
+
+        depth_features = points_in_camera_space[..., 2:3].repeat(
+            1, 3
+        )  # Usar Z como feature
+
         # Renderizar profundidad
-        rendered_depth_image, _, = rasterizer_depth(
-            means3D = means3D,
-            means2D = torch.zeros_like(means3D, requires_grad=True, device="cuda") + 0,
-            shs = None,
-            colors_precomp = depth_features,
-            opacities = self.get_opacity,
-            scales = self.get_scaling,
-            rotations = self.get_rotation,
-            cov3D_precomp = None)
-        
-        depth_map = rendered_depth_image[0:1, ...] # Tomar solo el primer canal (Z)
+        (
+            rendered_depth_image,
+            _,
+            _,
+        ) = rasterizer_depth(
+            means3D=means3D,
+            means2D=torch.zeros_like(means3D, requires_grad=True, device="cuda") + 0,
+            shs=None,
+            colors_precomp=depth_features,
+            opacities=self.get_opacity,
+            scales=self.get_scaling,
+            rotations=self.get_rotation,
+            cov3D_precomp=None,
+        )
+
+        depth_map = rendered_depth_image[0:1, ...]  # Tomar solo el primer canal (Z)
 
         # Crear una configuración de rasterización para las normales
         raster_settings_normal = GaussianRasterizationSettings(
             image_height=int(viewpoint_camera.image_height),
             image_width=int(viewpoint_camera.image_width),
-            tanfovx=viewpoint_camera.tanfovx,
-            tanfovy=viewpoint_camera.tanfovy,
+            tanfovx=tanfovx,
+            tanfovy=tanfovy,
             bg=torch.zeros(3, device="cuda"),
-            scale_modifier=viewpoint_camera.scale_modifier,
+            scale_modifier=scaling_modifier,
             viewmatrix=viewpoint_camera.world_view_transform,
             projmatrix=viewpoint_camera.full_proj_transform,
             sh_degree=0,
             campos=viewpoint_camera.camera_center,
             prefiltered=False,
-            debug=False
+            debug=False,
+            antialiasing=False,  # Añadir este argumento
         )
 
         rasterizer_normal = GaussianRasterizer(raster_settings=raster_settings_normal)
 
         # Preparar normales para renderizar
-        normals = self.get_normals() # Obtener normales en espacio del mundo
-        
+        normals = self.get_normals()  # Obtener normales en espacio del mundo
+
         # Renderizar normales
-        rendered_normal_image, _, = rasterizer_normal(
-            means3D = means3D,
-            means2D = torch.zeros_like(means3D, requires_grad=True, device="cuda") + 0,
-            shs = None,
-            colors_precomp = normals, # Usar normales como "color"
-            opacities = self.get_opacity,
-            scales = self.get_scaling,
-            rotations = self.get_rotation,
-            cov3D_precomp = None)
+        (
+            rendered_normal_image,
+            _,
+            _,
+        ) = rasterizer_normal(
+            means3D=means3D,
+            means2D=torch.zeros_like(means3D, requires_grad=True, device="cuda") + 0,
+            shs=None,
+            colors_precomp=normals,  # Usar normales como "color"
+            opacities=self.get_opacity,
+            scales=self.get_scaling,
+            rotations=self.get_rotation,
+            cov3D_precomp=None,
+        )
 
         return depth_map, rendered_normal_image
-
 
     def get_exposure_from_name(self, image_name):
         if self.pretrained_exposures is None:

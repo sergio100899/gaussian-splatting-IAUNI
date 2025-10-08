@@ -17,14 +17,9 @@ from utils.loss_utils import (
     l1_loss,
     ssim,
     edge_loss,
+    depth_normal_consistency_loss,
     depth_inference,
-    align_mean_std_and_compute_loss,
-    cosine_similarity_loss,
-    eikonal_loss,
-    normal_consistency_loss,
-    curvature_loss,
     align_mean_std_and_compute_gradient_loss,
-    depth_normal_consistency_loss
 )  # noqa
 from gaussian_renderer import render, network_gui
 import sys
@@ -32,7 +27,7 @@ from scene import Scene, GaussianModel
 from utils.general_utils import safe_state, get_expon_lr_func
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr, depth_to_normal
+from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
@@ -175,8 +170,8 @@ def training(
                 gt_depth = depth_inference(gt_image).squeeze(0).to("cuda")
                 viewpoint_cam.gt_depth = gt_depth
 
-                gt_normals = depth_to_normal(gt_depth, viewpoint_cam).squeeze()
-                viewpoint_cam.gt_normals = gt_normals
+                # gt_normals = depth_to_normal(viewpoint_cam, gt_depth).squeeze()
+                # viewpoint_cam.gt_normals = gt_normals
 
         # Render
         if (iteration - 1) == debug_from:
@@ -235,9 +230,9 @@ def training(
 
         # Depth Loss
         # L_depth = l1_loss(render_depth_img, viewpoint_cam.gt_depth)
-        #L_depth = align_mean_std_and_compute_loss(
+        # L_depth = align_mean_std_and_compute_loss(
         #    depth_map.squeeze(), viewpoint_cam.gt_depth
-        #)
+        # )
 
         L_depth = align_mean_std_and_compute_gradient_loss(
             depth_map.squeeze(), viewpoint_cam.gt_depth, gt_image
@@ -251,35 +246,17 @@ def training(
             + weight_depth * L_depth
         )
 
-        # Geometric Loss (L_normal)
-        L_eik = L_cons = L_curv = torch.tensor(0.0, device="cuda")
+        # Depth-Normal Consistency Loss
         L_normal = torch.tensor(0.0, device="cuda")
-        if iteration > args.normal_loss_warmup and args.num_normal_pts > 0 and weight_normal > 0:
-            num_gaussians = gaussians.get_xyz.shape[0]
-            if num_gaussians > 0:
-                rand_idx = torch.randint(0, num_gaussians, (args.num_normal_pts,), device="cuda")
-                sample_xyz = gaussians.get_xyz[rand_idx]
-                sample_scales = gaussians.get_scaling[rand_idx]
-                points = sample_xyz + (torch.rand_like(sample_xyz) - 0.5) * 2 * sample_scales
+        if iteration > args.normal_loss_warmup and weight_normal > 0:
+            # Render normals using the dedicated method in GaussianModel
+            _, rendered_normal_map = gaussians.render_depth_and_normal(viewpoint_cam)
 
-                _, normals, sdf_grad = gaussians.get_sdf_and_normals(points, k=16)
-                
-                # print(points.shape, normals.shape, sdf_grad.shape)
-                # print(normal_consistency_loss(normals, points, k=5))
+            L_normal = depth_normal_consistency_loss(
+                depth_map, rendered_normal_map, viewpoint_cam
+            )
+            loss += weight_normal * L_normal
 
-                if args.lambda_eik > 0:
-                    L_eik = eikonal_loss(sdf_grad)
-                
-                if args.lambda_cons > 0:
-                    L_cons = normal_consistency_loss(normals, points, k=5)
-
-                if args.lambda_curv > 0:
-                    L_curv = curvature_loss(normals, points, k=5)
-                
-                # Combine geometric losses into the new L_normal
-                L_normal = args.lambda_eik * L_eik + args.lambda_cons * L_cons + args.lambda_curv * L_curv
-                loss += weight_normal * L_normal
-        
         Ll1depth += 0
 
         loss.backward()
@@ -310,9 +287,6 @@ def training(
                 L_edge,
                 L_depth,
                 L_normal,
-                L_eik,
-                L_cons,
-                L_curv,
                 loss,
                 l1_loss,
                 iter_start.elapsed_time(iter_end),
@@ -413,9 +387,6 @@ def training_report(
     L_edge,
     L_depth,
     L_normal,
-    L_eik,
-    L_cons,
-    L_curv,
     loss,
     l1_loss,
     elapsed,
@@ -435,12 +406,6 @@ def training_report(
         tb_writer.add_scalar(
             "train_loss_patches/normal_loss", L_normal.item(), iteration
         )
-
-        # Geometric losses
-        if L_eik.item() > 0 or L_cons.item() > 0 or L_curv.item() > 0:
-            tb_writer.add_scalar("train_loss_geo/eikonal", L_eik.item(), iteration)
-            tb_writer.add_scalar("train_loss_geo/consistency", L_cons.item(), iteration)
-            tb_writer.add_scalar("train_loss_geo/curvature", L_curv.item(), iteration)
 
     # Report test and samples of training set
     if iteration in testing_iterations:
@@ -604,11 +569,12 @@ if __name__ == "__main__":
     )
 
     # Geometric Loss Arguments
-    parser.add_argument("--normal_loss_warmup", type=int, default=3000, help="Iterations to warmup before applying geometric loss")
-    parser.add_argument("--num_normal_pts", type=int, default=4096, help="Number of points to sample for geometric loss")
-    parser.add_argument("--lambda_eik", type=float, default=0.1, help="Weight for Eikonal loss")
-    parser.add_argument("--lambda_cons", type=float, default=0.05, help="Weight for normal consistency loss")
-    parser.add_argument("--lambda_curv", type=float, default=0.01, help="Weight for curvature loss")
+    parser.add_argument(
+        "--normal_loss_warmup",
+        type=int,
+        default=3000,
+        help="Iterations to warmup before applying geometric loss",
+    )
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)

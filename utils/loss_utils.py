@@ -17,6 +17,7 @@ from math import exp
 from PIL import Image
 from transformers import pipeline
 import torchvision.transforms as transforms
+from utils.image_utils import depth_to_normal
 
 pipe = pipeline(
     task="depth-estimation", model="depth-anything/Depth-Anything-V2-Base-hf"
@@ -126,6 +127,7 @@ def depth_loss(network_output: torch.tensor, gt: torch.tensor):
     nt_depth = depth_inference(network_output)
     return torch.abs((nt_depth - gt_depth)).mean()
 
+
 def align_mean_std_and_compute_loss(rendered_depth, gt_depth):
     """
     Alinea el mapa de profundidad renderizado con el ground truth usando la media y la desviación estándar,
@@ -139,11 +141,12 @@ def align_mean_std_and_compute_loss(rendered_depth, gt_depth):
     mean_rendered = rendered_depth.mean()
     std_rendered = rendered_depth.std()
 
-
-    aligned_depth = (rendered_depth - mean_rendered) / (std_rendered + 1e-6) * std_gt + mean_gt
-
+    aligned_depth = (rendered_depth - mean_rendered) / (
+        std_rendered + 1e-6
+    ) * std_gt + mean_gt
 
     return l1_loss(aligned_depth, gt_depth_detached)
+
 
 def align_mean_std_and_compute_gradient_loss(
     rendered_depth, gt_depth, gt_image, alpha=1.0
@@ -173,6 +176,7 @@ def align_mean_std_and_compute_gradient_loss(
 
     return gradient_loss.mean()
 
+
 def depth_normal_consistency_loss(depth, rendered_normal, camera):
     """
     Calcula la pérdida de consistencia entre profundidad y normales.
@@ -182,19 +186,20 @@ def depth_normal_consistency_loss(depth, rendered_normal, camera):
         camera: Objeto de cámara con transformaciones.
     """
     # Calcular normales desde la profundidad
-    normal_from_depth_world = depth_to_normal(camera, depth.squeeze(0)) # (H, W, 3)
-    
+    normal_from_depth_world = depth_to_normal(camera, depth.squeeze(0))  # (H, W, 3)
+
     # Transformar ambos mapas de normales al espacio de la vista (view space)
     view_transform = camera.world_view_transform.T[:3, :3]
-    
+
     normal_from_depth_view = normal_from_depth_world @ view_transform.T
     rendered_normal_view = rendered_normal.permute(1, 2, 0) @ view_transform.T
-    
+
     # Calcular el error de similitud de coseno
     # El objetivo es que el producto punto sea 1
     normal_error = 1 - (rendered_normal_view * normal_from_depth_view).sum(dim=-1)
-    
+
     return normal_error.mean()
+
 
 def cosine_similarity_loss(rendered_normals, gt_normals):
     """
@@ -280,50 +285,3 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
 def fast_ssim(img1, img2):
     ssim_map = FusedSSIMMap.apply(C1, C2, img1, img2)
     return ssim_map.mean()
-
-def eikonal_loss(grad_sdf):
-    """
-    L_eik = (||∇f(p)|| - 1)²
-    """
-    return (torch.linalg.norm(grad_sdf, dim=-1) - 1).pow(2).mean()
-
-def normal_consistency_loss(normals, points, k=5):
-    """
-    L_cons = 1 - |n_i ⋅ n_j|, usando los k vecinos más cercanos.
-    Debe cumplirse: normals.shape == points.shape == (N, 3)
-    """
-    N = points.shape[0]
-    if N < k + 1:
-        return torch.tensor(0.0, device=points.device)
-
-    with torch.no_grad():
-        dists = torch.cdist(points, points)  # (N, N)
-        k_eff = min(k, N - 1)
-        knn_idx = torch.topk(dists, k_eff + 1, largest=False, sorted=True).indices[:, 1:]  # (N, k_eff)
-
-    # Seleccionar normales de los k vecinos
-    neighbor_normals = normals[knn_idx.reshape(-1)]  # (N*k_eff, 3)
-    neighbor_normals = neighbor_normals.reshape(N, k_eff, 3)
-
-    central_normals = normals.unsqueeze(1).expand(-1, k_eff, -1)
-
-    dot_product = torch.sum(central_normals * neighbor_normals, dim=2)
-    return (1.0 - torch.abs(dot_product)).mean()
-
-
-
-def curvature_loss(normals, points, k=5):
-    """
-    L_curv = ||n_i - n_j||²
-    """
-    if points.shape[0] < k + 1:
-        return torch.tensor(0.0, device=points.device)
-
-    with torch.no_grad():
-        dists = torch.cdist(points, points)
-        knn_idx = torch.topk(dists, k + 1, largest=False, sorted=True).indices[:, 1:]
-
-    neighbor_normals = normals[knn_idx.reshape(-1)].contiguous().reshape(points.shape[0], k, 3)
-    central_normals = normals.unsqueeze(1).expand(-1, k, -1)
-
-    return (central_normals - neighbor_normals).pow(2).sum(dim=-1).mean()
