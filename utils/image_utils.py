@@ -45,23 +45,23 @@ def load_image_as_tensor_pil(path: str, grayscale: bool = False) -> torch.Tensor
     return tensor
 
 
-def depth_to_normal(depth_map: torch.tensor, camera: torch.tensor):
-    depth_map = depth_map.squeeze()
-    height, width = depth_map.shape
-    points_world = torch.zeros((height + 1, width + 1, 3)).to(depth_map.device)
-    points_world[:height, :width, :] = unproject_depth_map(depth_map, camera)
+# def depth_to_normal(depth_map: torch.tensor, camera: torch.tensor):
+#     depth_map = depth_map.squeeze()
+#     height, width = depth_map.shape
+#     points_world = torch.zeros((height + 1, width + 1, 3)).to(depth_map.device)
+#     points_world[:height, :width, :] = unproject_depth_map(depth_map, camera)
 
-    p1 = points_world[:-1, :-1, :]
-    p2 = points_world[1:, :-1, :]
-    p3 = points_world[:-1, 1:, :]
+#     p1 = points_world[:-1, :-1, :]
+#     p2 = points_world[1:, :-1, :]
+#     p3 = points_world[:-1, 1:, :]
 
-    v1 = p2 - p1
-    v2 = p3 - p1
+#     v1 = p2 - p1
+#     v2 = p3 - p1
 
-    normals = torch.cross(v1, v2, dim=-1)
-    normals = normals / (torch.norm(normals, dim=-1, keepdim=True) + 1e-8)
+#     normals = torch.cross(v1, v2, dim=-1)
+#     normals = normals / (torch.norm(normals, dim=-1, keepdim=True) + 1e-8)
 
-    return normals
+#     return normals
 
 
 def unproject_depth_map(depth_map: torch.tensor, camera: torch.tensor):
@@ -105,3 +105,43 @@ def unproject_depth_map(depth_map: torch.tensor, camera: torch.tensor):
     points_world = points_world.view((height, width, 3))
 
     return points_world
+
+def depths_to_points(view, depthmap):
+    """Convierte un mapa de profundidad a una nube de puntos 3D."""
+    c2w = view.world_view_transform.inverse()
+    W, H = int(view.image_width), int(view.image_height)
+    
+    # Matriz de intrínsecos desde la matriz de proyección completa
+    projection_matrix = view.full_proj_transform
+    intrins = torch.zeros(3, 3, device="cuda")
+    intrins[0, 0] = projection_matrix[0, 0] * W / 2
+    intrins[1, 1] = projection_matrix[1, 1] * H / 2
+    intrins[0, 2] = (projection_matrix[0, 2] + 1) * W / 2
+    intrins[1, 2] = (projection_matrix[1, 2] + 1) * H / 2
+    intrins[2, 2] = 1.0
+
+    grid_x, grid_y = torch.meshgrid(torch.arange(W, device='cuda').float(), torch.arange(H, device='cuda').float(), indexing='xy')
+    points_2d = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3)
+    
+    # Desproyectar puntos
+    rays_d_cam = points_2d @ intrins.inverse().T
+    rays_d_world = rays_d_cam @ c2w[:3, :3].T
+    rays_o_world = c2w[:3, 3]
+    
+    points_3d = depthmap.reshape(-1, 1) * rays_d_world + rays_o_world
+    return points_3d.reshape(H, W, 3)
+
+def depth_to_normal(view, depth):
+    """Calcula el mapa de normales a partir de un mapa de profundidad."""
+    points = depths_to_points(view, depth)
+    points = points.permute(2, 0, 1) # (3, H, W)
+    
+    # Calcular gradientes usando padding para mantener el tamaño
+    grad_y = torch.nn.functional.pad(points[:, 2:, :] - points[:, :-2, :], (0, 0, 1, 1))
+    grad_x = torch.nn.functional.pad(points[:, :, 2:] - points[:, :, :-2], (1, 1, 0, 0))
+    
+    # Producto cruz para obtener la normal
+    normal_map = torch.cross(grad_x, grad_y, dim=0)
+    normal_map = torch.nn.functional.normalize(normal_map, dim=0)
+    
+    return normal_map.permute(1, 2, 0) # (H, W, 3)

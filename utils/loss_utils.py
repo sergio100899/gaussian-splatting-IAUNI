@@ -173,6 +173,29 @@ def align_mean_std_and_compute_gradient_loss(
 
     return gradient_loss.mean()
 
+def depth_normal_consistency_loss(depth, rendered_normal, camera):
+    """
+    Calcula la pérdida de consistencia entre profundidad y normales.
+    Args:
+        depth (torch.Tensor): Mapa de profundidad (1, H, W).
+        rendered_normal (torch.Tensor): Mapa de normales renderizado (3, H, W) en espacio del mundo.
+        camera: Objeto de cámara con transformaciones.
+    """
+    # Calcular normales desde la profundidad
+    normal_from_depth_world = depth_to_normal(camera, depth.squeeze(0)) # (H, W, 3)
+    
+    # Transformar ambos mapas de normales al espacio de la vista (view space)
+    view_transform = camera.world_view_transform.T[:3, :3]
+    
+    normal_from_depth_view = normal_from_depth_world @ view_transform.T
+    rendered_normal_view = rendered_normal.permute(1, 2, 0) @ view_transform.T
+    
+    # Calcular el error de similitud de coseno
+    # El objetivo es que el producto punto sea 1
+    normal_error = 1 - (rendered_normal_view * normal_from_depth_view).sum(dim=-1)
+    
+    return normal_error.mean()
+
 def cosine_similarity_loss(rendered_normals, gt_normals):
     """
     Calcula la pérdida como 1 menos la similitud de coseno entre los vectores normales.
@@ -266,21 +289,28 @@ def eikonal_loss(grad_sdf):
 
 def normal_consistency_loss(normals, points, k=5):
     """
-    L_cons = 1 - |n_i ⋅ n_j|
+    L_cons = 1 - |n_i ⋅ n_j|, usando los k vecinos más cercanos.
+    Debe cumplirse: normals.shape == points.shape == (N, 3)
     """
-    if points.shape[0] < k + 1:
+    N = points.shape[0]
+    if N < k + 1:
         return torch.tensor(0.0, device=points.device)
-    
-    with torch.no_grad():
-        dists = torch.cdist(points, points)
-        knn_idx = torch.topk(dists, k + 1, largest=False, sorted=True).indices[:, 1:]
 
-    neighbor_normals = normals[knn_idx.view(-1)].view(points.shape[0], k, 3)
-    central_normals = normals.unsqueeze(1).expand(-1, k, -1)
+    with torch.no_grad():
+        dists = torch.cdist(points, points)  # (N, N)
+        k_eff = min(k, N - 1)
+        knn_idx = torch.topk(dists, k_eff + 1, largest=False, sorted=True).indices[:, 1:]  # (N, k_eff)
+
+    # Seleccionar normales de los k vecinos
+    neighbor_normals = normals[knn_idx.reshape(-1)]  # (N*k_eff, 3)
+    neighbor_normals = neighbor_normals.reshape(N, k_eff, 3)
+
+    central_normals = normals.unsqueeze(1).expand(-1, k_eff, -1)
 
     dot_product = torch.sum(central_normals * neighbor_normals, dim=2)
-    
     return (1.0 - torch.abs(dot_product)).mean()
+
+
 
 def curvature_loss(normals, points, k=5):
     """
@@ -293,7 +323,7 @@ def curvature_loss(normals, points, k=5):
         dists = torch.cdist(points, points)
         knn_idx = torch.topk(dists, k + 1, largest=False, sorted=True).indices[:, 1:]
 
-    neighbor_normals = normals[knn_idx.view(-1)].view(points.shape[0], k, 3)
+    neighbor_normals = normals[knn_idx.reshape(-1)].contiguous().reshape(points.shape[0], k, 3)
     central_normals = normals.unsqueeze(1).expand(-1, k, -1)
 
     return (central_normals - neighbor_normals).pow(2).sum(dim=-1).mean()

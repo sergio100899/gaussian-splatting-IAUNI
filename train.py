@@ -23,7 +23,8 @@ from utils.loss_utils import (
     eikonal_loss,
     normal_consistency_loss,
     curvature_loss,
-    align_mean_std_and_compute_gradient_loss
+    align_mean_std_and_compute_gradient_loss,
+    depth_normal_consistency_loss
 )  # noqa
 from gaussian_renderer import render, network_gui
 import sys
@@ -242,51 +243,43 @@ def training(
             depth_map.squeeze(), viewpoint_cam.gt_depth, gt_image
         )
 
-        # Rendereed NOrmal Map
-        render_normal_im = depth_to_normal(depth_map, viewpoint_cam).squeeze()
-
-        # Normal Loss
-        L_normal = cosine_similarity_loss(render_normal_im, viewpoint_cam.gt_normals)
-
+        # Base Loss
         loss = (
             (1.0 - opt.lambda_dssim) * Ll1
             + opt.lambda_dssim * (1.0 - ssim_value)
             + weight_edge * L_edge
             + weight_depth * L_depth
-            + weight_normal * L_normal
         )
 
-        # Geometric Loss
+        # Geometric Loss (L_normal)
         L_eik = L_cons = L_curv = torch.tensor(0.0, device="cuda")
-        if iteration > args.normal_loss_warmup and args.num_normal_pts > 0:
-            # Sample points
+        L_normal = torch.tensor(0.0, device="cuda")
+        if iteration > args.normal_loss_warmup and args.num_normal_pts > 0 and weight_normal > 0:
             num_gaussians = gaussians.get_xyz.shape[0]
             if num_gaussians > 0:
                 rand_idx = torch.randint(0, num_gaussians, (args.num_normal_pts,), device="cuda")
                 sample_xyz = gaussians.get_xyz[rand_idx]
                 sample_scales = gaussians.get_scaling[rand_idx]
-                
-                # Add scaled noise to sample points in and around the surface
                 points = sample_xyz + (torch.rand_like(sample_xyz) - 0.5) * 2 * sample_scales
 
-                # Get SDF and normals for the sampled points
                 _, normals, sdf_grad = gaussians.get_sdf_and_normals(points, k=16)
+                
+                # print(points.shape, normals.shape, sdf_grad.shape)
+                # print(normal_consistency_loss(normals, points, k=5))
 
-                # Eikonal Loss
                 if args.lambda_eik > 0:
                     L_eik = eikonal_loss(sdf_grad)
                 
-                # Normal Consistency Loss
                 if args.lambda_cons > 0:
                     L_cons = normal_consistency_loss(normals, points, k=5)
 
-                # Curvature Loss
                 if args.lambda_curv > 0:
                     L_curv = curvature_loss(normals, points, k=5)
                 
-                L_geo = args.lambda_eik * L_eik + args.lambda_cons * L_cons + args.lambda_curv * L_curv
-                loss += L_geo
-
+                # Combine geometric losses into the new L_normal
+                L_normal = args.lambda_eik * L_eik + args.lambda_cons * L_cons + args.lambda_curv * L_curv
+                loss += weight_normal * L_normal
+        
         Ll1depth += 0
 
         loss.backward()
