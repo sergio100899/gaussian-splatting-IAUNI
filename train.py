@@ -238,24 +238,20 @@ def training(
             depth_map.squeeze(), viewpoint_cam.gt_depth, gt_image
         )
 
+        _, rendered_normal_map = gaussians.render_depth_and_normal(viewpoint_cam)
+
+        L_normal = depth_normal_consistency_loss(
+            depth_map, rendered_normal_map, viewpoint_cam
+        )
+
         # Base Loss
         loss = (
             (1.0 - opt.lambda_dssim) * Ll1
             + opt.lambda_dssim * (1.0 - ssim_value)
             + weight_edge * L_edge
-            + weight_depth * L_depth
+            + weight_depth * L_depth,
+            weight_normal * L_normal
         )
-
-        # Depth-Normal Consistency Loss
-        L_normal = torch.tensor(0.0, device="cuda")
-        if iteration > args.normal_loss_warmup and weight_normal > 0:
-            # Render normals using the dedicated method in GaussianModel
-            _, rendered_normal_map = gaussians.render_depth_and_normal(viewpoint_cam)
-
-            L_normal = depth_normal_consistency_loss(
-                depth_map, rendered_normal_map, viewpoint_cam
-            )
-            loss += weight_normal * L_normal
 
         Ll1depth += 0
 
@@ -557,7 +553,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--normal_weight",
         type=float,
-        default=0.05,
+        default=0.15,
         help="Peso para L_normal cuando está activa.",
     )
     parser.add_argument(
@@ -566,14 +562,6 @@ if __name__ == "__main__":
         default="binary",
         choices=["binary", "cosine", "sigmoid"],
         help="Función de activación para las pérdidas auxiliares (binary, cosine, sigmoid).",
-    )
-
-    # Geometric Loss Arguments
-    parser.add_argument(
-        "--normal_loss_warmup",
-        type=int,
-        default=3000,
-        help="Iterations to warmup before applying geometric loss",
     )
 
     args = parser.parse_args(sys.argv[1:])

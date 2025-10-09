@@ -5,7 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "transformers>=4.52.4",
 ]  # Instalación manual por grupos
 
 [project.optional-dependencies]
@@ -22,6 +21,7 @@ base = [
     "setuptools>=79.0.0",
     "tqdm>=4.67.1",
     "tensorboard",
+    "transformers>=4.52.4",
     "pytorch3d"
 ]
 submodules = [
@@ -42,6 +42,7 @@ packages = []
 torch = [{ index = "pytorch-cu128" }]
 torchvision = [{ index = "pytorch-cu128" }]
 torchaudio = [{ index = "pytorch-cu128" }]
+pytorch3d = { git = "https://github.com/facebookresearch/pytorch3d.git" }
 diff-gaussian-rasterization = { path = "submodules/diff-gaussian-rasterization" }
 simple-knn = { path = "submodules/simple-knn" }
 fused-ssim = { path = "submodules/fused-ssim" }
@@ -52,4 +53,5 @@ name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
-
+[tool.uv]
+no-build-isolation-package = ["pytorch3d"]
