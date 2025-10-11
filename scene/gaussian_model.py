@@ -574,6 +574,11 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            # Si el tensor de parámetros es un escalar (como nuestras variables de incertidumbre),
+            # no se le puede aplicar la máscara de poda. Lo saltamos.
+            if group["params"][0].shape[0] == 1:
+                continue
+
             stored_state = self.optimizer.state.get(group["params"][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
@@ -613,6 +618,10 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            # Ignorar los grupos de parámetros que no son atributos de las gaussianas (ej. incertidumbre)
+            if group["name"] not in tensors_dict:
+                continue
+
             assert len(group["params"]) == 1
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group["params"][0], None)

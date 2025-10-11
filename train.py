@@ -10,6 +10,7 @@
 #
 
 import os
+import torchvision
 import torch
 import math
 from random import randint
@@ -89,6 +90,37 @@ def training(
         opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations
     )
 
+    # PASO 1: Crear los parámetros de incertidumbre como variables aprendibles.
+    # Se inicializan en 0.0, lo que significa una varianza inicial de exp(0) = 1.0.
+    log_var_l1 = torch.nn.Parameter(
+        torch.tensor([0.0], device="cuda"), requires_grad=True
+    )
+    log_var_depth = torch.nn.Parameter(
+        torch.tensor([0.0], device="cuda"), requires_grad=True
+    )
+    log_var_normal = torch.nn.Parameter(
+        torch.tensor([0.0], device="cuda"), requires_grad=True
+    )
+    log_var_edge = torch.nn.Parameter(
+        torch.tensor([0.0], device="cuda"), requires_grad=True
+    )
+
+    # PASO 2: Añadir estos parámetros al optimizador para que puedan ser entrenados en el futuro.
+    # Creamos un grupo de parámetros separado para cada variable de incertidumbre.
+    # Esto es crucial para que la lógica de densificación no falle.
+    gaussians.optimizer.add_param_group(
+        {"params": [log_var_l1], "lr": opt.feature_lr, "name": "log_var_l1"}
+    )
+    gaussians.optimizer.add_param_group(
+        {"params": [log_var_depth], "lr": opt.feature_lr, "name": "log_var_depth"}
+    )
+    gaussians.optimizer.add_param_group(
+        {"params": [log_var_normal], "lr": opt.feature_lr, "name": "log_var_normal"}
+    )
+    gaussians.optimizer.add_param_group(
+        {"params": [log_var_edge], "lr": opt.feature_lr, "name": "log_var_edge"}
+    )
+
     depth_weight = get_expon_lr_func(
         opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations
     )
@@ -101,6 +133,14 @@ def training(
     progress_bar = tqdm(
         range(first_iter, opt.iterations), desc="Training progress"
     )  # progress bar for training iterations
+
+    # Crear directorios para guardar los mapas de profundidad
+    depth_from_render_path = os.path.join(dataset.model_path, "depth_from_render")
+    depth_from_gaussians_path = os.path.join(dataset.model_path, "depth_from_gaussians")
+    if args.save_depth_interval > 0:
+        os.makedirs(depth_from_render_path, exist_ok=True)
+        os.makedirs(depth_from_gaussians_path, exist_ok=True)
+
     first_iter += 1
 
     Ll1depth = 0
@@ -238,7 +278,9 @@ def training(
             depth_map.squeeze(), viewpoint_cam.gt_depth, gt_image
         )
 
-        _, rendered_normal_map = gaussians.render_depth_and_normal(viewpoint_cam)
+        rendered_depth_from_gaussians, rendered_normal_map = (
+            gaussians.render_depth_and_normal(viewpoint_cam)
+        )
 
         L_normal = depth_normal_consistency_loss(
             depth_map, rendered_normal_map, viewpoint_cam
@@ -249,8 +291,8 @@ def training(
             (1.0 - opt.lambda_dssim) * Ll1
             + opt.lambda_dssim * (1.0 - ssim_value)
             + weight_edge * L_edge
-            + weight_depth * L_depth,
-            weight_normal * L_normal
+            + weight_depth * L_depth
+            + weight_normal * L_normal
         )
 
         Ll1depth += 0
@@ -260,6 +302,33 @@ def training(
 
         with torch.no_grad():
             # Progress bar
+
+            # Guardar mapas de profundidad en intervalos definidos
+            if (
+                args.save_depth_interval > 0
+                and iteration % args.save_depth_interval == 0
+            ):
+                torchvision.utils.save_image(
+                    depth_map,
+                    os.path.join(
+                        depth_from_render_path, f"{iteration:07d}_{vind:05d}.png"
+                    ),
+                )
+
+                # Invertir el mapa de profundidad de las gaussianas para la visualización
+                # (objetos cercanos blancos, lejanos negros)
+                depth_gauss_normalized = rendered_depth_from_gaussians.clone()
+                depth_gauss_normalized = (
+                    depth_gauss_normalized - depth_gauss_normalized.min()
+                ) / (depth_gauss_normalized.max() - depth_gauss_normalized.min())
+                inverted_depth_gauss = 1.0 - depth_gauss_normalized
+
+                torchvision.utils.save_image(
+                    inverted_depth_gauss,
+                    os.path.join(
+                        depth_from_gaussians_path, f"{iteration:07d}_{vind:05d}.png"
+                    ),
+                )
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
             # ema_Ll1depth_for_log = 0
@@ -283,6 +352,10 @@ def training(
                 L_edge,
                 L_depth,
                 L_normal,
+                log_var_l1,
+                log_var_edge,
+                log_var_depth,
+                log_var_normal,
                 loss,
                 l1_loss,
                 iter_start.elapsed_time(iter_end),
@@ -383,6 +456,10 @@ def training_report(
     L_edge,
     L_depth,
     L_normal,
+    log_var_l1,
+    log_var_edge,
+    log_var_depth,
+    log_var_normal,
     loss,
     l1_loss,
     elapsed,
@@ -401,6 +478,21 @@ def training_report(
         tb_writer.add_scalar("train_loss_patches/depth_loss", L_depth.item(), iteration)
         tb_writer.add_scalar(
             "train_loss_patches/normal_loss", L_normal.item(), iteration
+        )
+
+        # PASO 4: Registrar las varianzas (incertidumbres) en TensorBoard.
+        # Usamos exp() para convertir el logaritmo de la varianza a la varianza real.
+        tb_writer.add_scalar(
+            "uncertainty/var_l1", torch.exp(log_var_l1).item(), iteration
+        )
+        tb_writer.add_scalar(
+            "uncertainty/var_edge", torch.exp(log_var_edge).item(), iteration
+        )
+        tb_writer.add_scalar(
+            "uncertainty/var_depth", torch.exp(log_var_depth).item(), iteration
+        )
+        tb_writer.add_scalar(
+            "uncertainty/var_normal", torch.exp(log_var_normal).item(), iteration
         )
 
     # Report test and samples of training set
@@ -553,7 +645,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--normal_weight",
         type=float,
-        default=0.15,
+        default=0.1,
         help="Peso para L_normal cuando está activa.",
     )
     parser.add_argument(
@@ -562,6 +654,13 @@ if __name__ == "__main__":
         default="binary",
         choices=["binary", "cosine", "sigmoid"],
         help="Función de activación para las pérdidas auxiliares (binary, cosine, sigmoid).",
+    )
+    parser.add_argument(
+        "--save_depth_interval",
+        type=int,
+        default=400,
+        help="Intervalo para guardar los mapas de profundidad durante el entrenamiento. "
+        "Poner en 0 para desactivar.",
     )
 
     args = parser.parse_args(sys.argv[1:])
