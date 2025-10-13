@@ -1,16 +1,4 @@
-#
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use
-# under the terms of the LICENSE.md file.
-#
-# For inquiries contact  george.drettakis@inria.fr
-#
-
 import os
-import torchvision
 import torch
 import math
 from random import randint
@@ -54,6 +42,38 @@ except:
     SPARSE_ADAM_AVAILABLE = False
 
 
+class UncertaintyTracker:
+    def __init__(self, gamma=0.95, device="cuda"):
+        self.gamma = gamma
+        self.device = device
+        self.mean = torch.tensor(0.0, device=device)
+        self.var = torch.tensor(0.0, device=device)
+        self.initialized = False
+
+    def update(self, loss_value: torch.Tensor):
+        """Actualiza la media y varianza suavizadas."""
+        loss_value = loss_value.detach()
+
+        if not self.initialized:
+            # Inicializar con el primer valor
+            self.mean = loss_value
+            self.var = torch.tensor(0.0, device=self.device)
+            self.initialized = True
+            return self.var.detach(), self.mean.detach()
+
+        delta = loss_value - self.mean
+        self.mean = self.gamma * self.mean + (1 - self.gamma) * loss_value
+        self.var = self.gamma * self.var + (1 - self.gamma) * (delta**2)
+        return self.var.detach(), self.mean.detach()
+
+    def get_uncertainty(self):
+        """Devuelve la varianza actual (incertidumbre)."""
+        return self.var
+
+    def get_mean(self):
+        return self.mean
+
+
 def training(
     dataset,
     opt,
@@ -90,37 +110,6 @@ def training(
         opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations
     )
 
-    # PASO 1: Crear los parámetros de incertidumbre como variables aprendibles.
-    # Se inicializan en 0.0, lo que significa una varianza inicial de exp(0) = 1.0.
-    log_var_l1 = torch.nn.Parameter(
-        torch.tensor([0.0], device="cuda"), requires_grad=True
-    )
-    log_var_depth = torch.nn.Parameter(
-        torch.tensor([0.0], device="cuda"), requires_grad=True
-    )
-    log_var_normal = torch.nn.Parameter(
-        torch.tensor([0.0], device="cuda"), requires_grad=True
-    )
-    log_var_edge = torch.nn.Parameter(
-        torch.tensor([0.0], device="cuda"), requires_grad=True
-    )
-
-    # PASO 2: Añadir estos parámetros al optimizador para que puedan ser entrenados en el futuro.
-    # Creamos un grupo de parámetros separado para cada variable de incertidumbre.
-    # Esto es crucial para que la lógica de densificación no falle.
-    gaussians.optimizer.add_param_group(
-        {"params": [log_var_l1], "lr": opt.feature_lr, "name": "log_var_l1"}
-    )
-    gaussians.optimizer.add_param_group(
-        {"params": [log_var_depth], "lr": opt.feature_lr, "name": "log_var_depth"}
-    )
-    gaussians.optimizer.add_param_group(
-        {"params": [log_var_normal], "lr": opt.feature_lr, "name": "log_var_normal"}
-    )
-    gaussians.optimizer.add_param_group(
-        {"params": [log_var_edge], "lr": opt.feature_lr, "name": "log_var_edge"}
-    )
-
     depth_weight = get_expon_lr_func(
         opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations
     )
@@ -133,17 +122,15 @@ def training(
     progress_bar = tqdm(
         range(first_iter, opt.iterations), desc="Training progress"
     )  # progress bar for training iterations
-
-    # Crear directorios para guardar los mapas de profundidad
-    depth_from_render_path = os.path.join(dataset.model_path, "depth_from_render")
-    depth_from_gaussians_path = os.path.join(dataset.model_path, "depth_from_gaussians")
-    if args.save_depth_interval > 0:
-        os.makedirs(depth_from_render_path, exist_ok=True)
-        os.makedirs(depth_from_gaussians_path, exist_ok=True)
-
     first_iter += 1
 
     Ll1depth = 0
+
+    l1_tracker = UncertaintyTracker(gamma=args.uncertainty_gamma)
+    ssim_tracker = UncertaintyTracker(gamma=args.uncertainty_gamma)
+    edge_tracker = UncertaintyTracker(gamma=args.uncertainty_gamma)
+    depth_tracker = UncertaintyTracker(gamma=args.uncertainty_gamma)
+    normal_tracker = UncertaintyTracker(gamma=args.uncertainty_gamma)
 
     # Iteration start
     for iteration in range(first_iter, opt.iterations + 1):
@@ -241,24 +228,24 @@ def training(
             image *= alpha_mask
 
         # Loss
-        weight_edge = get_loss_weight(
-            iteration,
-            args.edge_weight,
-            args.edge_interval,
-            args.activation_fn,
-        )
-        weight_depth = get_loss_weight(
-            iteration,
-            args.depth_weight,
-            args.depth_interval,
-            args.activation_fn,
-        )
-        weight_normal = get_loss_weight(
-            iteration,
-            args.normal_weight,
-            args.normal_interval,
-            args.activation_fn,
-        )
+        # weight_edge = get_loss_weight(
+        #     iteration,
+        #     args.edge_weight,
+        #     args.edge_interval,
+        #     args.activation_fn,
+        # )
+        # weight_depth = get_loss_weight(
+        #     iteration,
+        #     args.depth_weight,
+        #     args.depth_interval,
+        #     args.activation_fn,
+        # )
+        # weight_normal = get_loss_weight(
+        #     iteration,
+        #     args.normal_weight,
+        #     args.normal_interval,
+        #     args.activation_fn,
+        # )
 
         Ll1 = l1_loss(image, gt_image)
         L_edge = edge_loss(image, gt_image)
@@ -278,19 +265,47 @@ def training(
             depth_map.squeeze(), viewpoint_cam.gt_depth, gt_image
         )
 
-        rendered_depth_from_gaussians, rendered_normal_map = (
-            gaussians.render_depth_and_normal(viewpoint_cam)
+        rendered_depth_map, rendered_normal_map = gaussians.render_depth_and_normal(
+            viewpoint_cam
         )
 
         L_normal = depth_normal_consistency_loss(
             depth_map, rendered_normal_map, viewpoint_cam
         )
 
+        # ---- Cálculo de pesos adaptativos por incertidumbre ----
+        l1_uncertainty, l1_mean = l1_tracker.update(Ll1)
+        ssim_uncertainty, ssim_mean = ssim_tracker.update(1 - ssim_value)
+        edge_uncertainty, edge_mean = edge_tracker.update(L_edge)
+        depth_uncertainty, depth_mean = depth_tracker.update(L_depth)
+        normal_uncertainty, normal_mean = normal_tracker.update(L_normal)
+
+        # weight_edge, weight_depth, weight_normal = compute_uncertainty_weights(
+        #     (
+        #         edge_uncertainty.item(),
+        #         depth_uncertainty.item(),
+        #         normal_uncertainty.item(),
+        #     ),
+        #     eps=1e-6,
+        #     normalize=True,
+        # )
+
+        # Grupo geométrico (Depth, Normal)
+        weights_3d = compute_uncertainty_weights(
+            (depth_uncertainty, normal_uncertainty),
+            normalize=True,
+            total_scale=0.4,  # 40% del total
+        )
+        
+        weight_depth, weight_normal = weights_3d
+        
+        # ---------------------------------------------------------
+
         # Base Loss
         loss = (
             (1.0 - opt.lambda_dssim) * Ll1
             + opt.lambda_dssim * (1.0 - ssim_value)
-            + weight_edge * L_edge
+            + 0.2 * L_edge
             + weight_depth * L_depth
             + weight_normal * L_normal
         )
@@ -302,33 +317,6 @@ def training(
 
         with torch.no_grad():
             # Progress bar
-
-            # Guardar mapas de profundidad en intervalos definidos
-            if (
-                args.save_depth_interval > 0
-                and iteration % args.save_depth_interval == 0
-            ):
-                torchvision.utils.save_image(
-                    depth_map,
-                    os.path.join(
-                        depth_from_render_path, f"{iteration:07d}_{vind:05d}.png"
-                    ),
-                )
-
-                # Invertir el mapa de profundidad de las gaussianas para la visualización
-                # (objetos cercanos blancos, lejanos negros)
-                depth_gauss_normalized = rendered_depth_from_gaussians.clone()
-                depth_gauss_normalized = (
-                    depth_gauss_normalized - depth_gauss_normalized.min()
-                ) / (depth_gauss_normalized.max() - depth_gauss_normalized.min())
-                inverted_depth_gauss = 1.0 - depth_gauss_normalized
-
-                torchvision.utils.save_image(
-                    inverted_depth_gauss,
-                    os.path.join(
-                        depth_from_gaussians_path, f"{iteration:07d}_{vind:05d}.png"
-                    ),
-                )
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
             # ema_Ll1depth_for_log = 0
@@ -337,7 +325,13 @@ def training(
                 progress_bar.set_postfix(
                     {
                         "Loss": f"{ema_loss_for_log:.{7}f}",
-                        "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}",
+                        # "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}",
+                        "u_l_edges": f"{edge_uncertainty:.{7}f}",
+                        "u_l_depth": f"{depth_uncertainty:.{7}f}",
+                        "u_l_normal": f"{normal_uncertainty:.{7}f}",
+                        "m_l_edges": f"{edge_mean:.{7}f}",
+                        "m_l_depth": f"{depth_mean:.{7}f}",
+                        "m_l_normal": f"{normal_mean:.{7}f}",
                     }
                 )
                 progress_bar.update(10)
@@ -352,10 +346,6 @@ def training(
                 L_edge,
                 L_depth,
                 L_normal,
-                log_var_l1,
-                log_var_edge,
-                log_var_depth,
-                log_var_normal,
                 loss,
                 l1_loss,
                 iter_start.elapsed_time(iter_end),
@@ -456,10 +446,6 @@ def training_report(
     L_edge,
     L_depth,
     L_normal,
-    log_var_l1,
-    log_var_edge,
-    log_var_depth,
-    log_var_normal,
     loss,
     l1_loss,
     elapsed,
@@ -478,21 +464,6 @@ def training_report(
         tb_writer.add_scalar("train_loss_patches/depth_loss", L_depth.item(), iteration)
         tb_writer.add_scalar(
             "train_loss_patches/normal_loss", L_normal.item(), iteration
-        )
-
-        # PASO 4: Registrar las varianzas (incertidumbres) en TensorBoard.
-        # Usamos exp() para convertir el logaritmo de la varianza a la varianza real.
-        tb_writer.add_scalar(
-            "uncertainty/var_l1", torch.exp(log_var_l1).item(), iteration
-        )
-        tb_writer.add_scalar(
-            "uncertainty/var_edge", torch.exp(log_var_edge).item(), iteration
-        )
-        tb_writer.add_scalar(
-            "uncertainty/var_depth", torch.exp(log_var_depth).item(), iteration
-        )
-        tb_writer.add_scalar(
-            "uncertainty/var_normal", torch.exp(log_var_normal).item(), iteration
         )
 
     # Report test and samples of training set
@@ -588,6 +559,39 @@ def get_loss_weight(iteration, max_weight, interval, activation_fn):
 
     return 0.0
 
+def compute_uncertainty_weights(uncertainties, eps=1e-6, normalize=True, total_scale=1.0, round_decimals=3):
+    """
+    Compute adaptive weights based on uncertainty (variance) of one or more loss terms.
+    
+    Args:
+        uncertainties (tuple or list): iterable of uncertainty (variance) values
+        eps (float): small constant to avoid division by zero
+        normalize (bool): whether to normalize weights to sum to total_scale
+        total_scale (float): total sum of weights after normalization (default = 1.0)
+        round_decimals (int): number of decimals to round for readability/logging
+    
+    Returns:
+        torch.Tensor: tensor of weights with same length as input
+    """
+    # Asegura que sean tensores float32 en GPU (si hay CUDA disponible)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    vars_tensor = torch.tensor(uncertainties, dtype=torch.float32, device=device)
+
+    # Inverso de la varianza (mayor incertidumbre = menor peso)
+    inv_vars = 1.0 / (vars_tensor + eps)
+
+    # Normalización opcional (para que sumen total_scale)
+    if normalize:
+        inv_vars = inv_vars / inv_vars.sum()
+        inv_vars = inv_vars * total_scale
+
+    # Redondeo opcional (solo para logging/claridad)
+    if round_decimals is not None:
+        scale = 10**round_decimals
+        inv_vars = torch.round(inv_vars * scale) / scale
+
+    return inv_vars
+
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -655,12 +659,12 @@ if __name__ == "__main__":
         choices=["binary", "cosine", "sigmoid"],
         help="Función de activación para las pérdidas auxiliares (binary, cosine, sigmoid).",
     )
+
     parser.add_argument(
-        "--save_depth_interval",
-        type=int,
-        default=400,
-        help="Intervalo para guardar los mapas de profundidad durante el entrenamiento. "
-        "Poner en 0 para desactivar.",
+        "--uncertainty_gamma",
+        type=float,
+        default=0.90,
+        help="Coeficiente de suavizado (EMA) para el cálculo de incertidumbre. Valores altos = respuesta más lenta pero más estable.",
     )
 
     args = parser.parse_args(sys.argv[1:])
